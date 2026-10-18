@@ -1,27 +1,31 @@
 /**
- * Projection engine — the single source of truth for monthly figures.
- * Dashboard, future months, income commitment and the purchase simulator all use it.
+ * Projection engine — the single source of truth for projected figures.
+ * Dashboard, future cycles, income commitment, expense views and the purchase simulator all use it.
  *
- * When an expense is paid:
- * - Fixed expenses / subscriptions: on the expense's `paymentDayOverride`, or the user's
- *   `defaultPaymentDay` when there is no override.
- * - Credit card purchases (single or installments): on the card's own statement due date,
- *   following the card's real billing cycle. `defaultPaymentDay` never applies to cards.
- * - Cash / Pix purchases: on the purchase date.
- * - Non-card installments: monthly from the first payment date.
+ * Projections are made per **financial cycle** (see `cycle.ts`), not per calendar month.
+ * Each item keeps its real date (purchase, payment or statement due date) and is assigned
+ * to the cycle that funds it:
+ * - Fixed expenses / subscriptions: paid on `paymentDayOverride` or `defaultPaymentDay`,
+ *   placed by the obligation rule (due on/before the payment day → previous cycle).
+ * - Credit card purchases (single or installments): statement computed from the card's own
+ *   closing and due dates (`billing.ts`), then the statement due date is placed by the
+ *   obligation rule. Installments fall on consecutive statements, hence consecutive cycles.
+ * - Non-card installments: monthly from the first payment date, placed by the obligation rule.
+ * - Cash / Pix purchases and income: the cycle in progress on their date.
+ * - Salary: the cycle of its reference month.
  */
-import { billingMonth, statementDueDate } from './billing'
+import { statementDueDate } from './billing'
 import {
-  addMonths,
-  compareDates,
-  dateInMonth,
-  monthOf,
-  monthsBetween,
-  parseISODate,
-  sameMonth,
-  toISODate,
-  type YearMonth,
-} from './dates'
+  cycleEnd,
+  cycleOfDate,
+  cycleSettlementDate,
+  cycleStart,
+  obligationCycle,
+  obligationMonth,
+  placeCardPurchase,
+  type FinancialCycle,
+} from './cycle'
+import { addMonths, compareDates, dateInMonth, monthOf, monthsBetween, parseISODate, sameMonth, toISODate, type YearMonth } from './dates'
 import { roundMoney, sumMoney } from './money'
 import { salaryForMonth, type SalarySource } from './salary'
 import type {
@@ -42,8 +46,10 @@ export interface ExpenseCharge {
   name: string
   type: ExpenseType
   amount: number
-  /** Expected payment date in the month (card due date for card purchases). */
+  /** Real date of the payment: payment day, purchase date or card statement due date. */
   date: ISODate
+  /** Billing: statement month (by due month), for card purchases. */
+  statementMonth?: YearMonth
   /** Card nickname, for card purchases. */
   cardName?: string
   /** e.g. "3/10" for installments. */
@@ -54,10 +60,13 @@ export interface IncomeItem {
   sourceId: string
   name: string
   amount: number
+  date: ISODate
 }
 
-export interface MonthProjection {
-  month: YearMonth
+export interface CycleProjection {
+  cycle: FinancialCycle
+  /** First and last day of the cycle, and the payment day that closes it. */
+  period: { start: ISODate; end: ISODate; settlement: ISODate }
   income: {
     salary: number
     salarySource: SalarySource
@@ -71,7 +80,7 @@ export interface MonthProjection {
     subscriptions: number
     occasional: number
     total: number
-    /** Sorted by expected payment date. */
+    /** Sorted by date. */
     items: ExpenseCharge[]
   }
   balance: number
@@ -91,7 +100,12 @@ export function projectionContext(data: Pick<FinancialData, 'cards' | 'defaultPa
   return { cards: new Map(data.cards.map((c) => [c.id, c])), defaultPaymentDay: data.defaultPaymentDay }
 }
 
-// ---------------------------------------------------------------- recurrence
+/** Cycle in progress today — the dashboard's "current" cycle. */
+export function currentCycle(data: Pick<FinancialData, 'defaultPaymentDay'>, today: ISODate): FinancialCycle {
+  return cycleOfDate(today, data.defaultPaymentDay)
+}
+
+// ---------------------------------------------------------------- regular expenses and income
 
 interface RecurringRule {
   recurrence: Recurrence
@@ -105,82 +119,106 @@ export function effectivePaymentDay(rule: Pick<RecurringRule, 'paymentDayOverrid
   return rule.paymentDayOverride ?? defaultPaymentDay
 }
 
-/** Payment date of a monthly/annual expense in `ym`, or `null` if it is not charged that month. */
-export function recurringPaymentDate(rule: RecurringRule, ym: YearMonth, defaultPaymentDay: number): ISODate | null {
-  if (rule.recurrence === 'ANNUAL' && rule.chargeMonth !== ym.month) return null
-  const date = dateInMonth(ym, effectivePaymentDay(rule, defaultPaymentDay))
+/** Payment date of a monthly/annual expense paid by `cycle`, or `null` if it has none in that cycle. */
+export function recurringPaymentDate(rule: RecurringRule, cycle: FinancialCycle, defaultPaymentDay: number): ISODate | null {
+  const day = effectivePaymentDay(rule, defaultPaymentDay)
+  const month = obligationMonth(cycle, day, defaultPaymentDay)
+  // For annual expenses, `chargeMonth` is the calendar month of the payment.
+  if (rule.recurrence === 'ANNUAL' && rule.chargeMonth !== month.month) return null
+  const date = dateInMonth(month, day)
   // Only payments on or after the start date count.
   return compareDates(date, parseISODate(rule.startDate)) >= 0 ? toISODate(date) : null
 }
 
-export function incomeAppliesTo(source: IncomeSource, ym: YearMonth): boolean {
-  const first = monthOf(source.expectedDate)
-  const diff = monthsBetween(first, ym)
-  switch (source.recurrence) {
-    case 'MONTHLY':
-      return diff >= 0
-    case 'ANNUAL':
-      return diff >= 0 && diff % 12 === 0
-    case 'OCCASIONAL':
-      return diff === 0
+/** Date an income source is received within `cycle`, or `null`. */
+export function incomeDateInCycle(source: IncomeSource, cycle: FinancialCycle, defaultPaymentDay: number): ISODate | null {
+  const first = parseISODate(source.expectedDate)
+  if (source.recurrence === 'OCCASIONAL') {
+    return sameMonth(cycleOfDate(first, defaultPaymentDay), cycle) ? source.expectedDate : null
   }
+  // Received on/after the payment day → that month's cycle; before it → still the previous cycle.
+  // Compared on the nominal day so a monthly income lands exactly once per cycle.
+  const month = first.day >= defaultPaymentDay ? cycle : addMonths(cycle, 1)
+  if (source.recurrence === 'ANNUAL' && month.month !== first.month) return null
+  const date = dateInMonth(month, first.day)
+  return compareDates(date, first) >= 0 ? toISODate(date) : null
 }
 
-// ---------------------------------------------------------------- expense placement
+// ---------------------------------------------------------------- purchases
 
 const cardOf = (method: string, cardId: string | null, cards: CardLookup) =>
   method === 'CREDIT_CARD' && cardId ? cards.get(cardId) : undefined
 
+export interface Placement {
+  cycle: FinancialCycle
+  /** Real date of the (first) payment. */
+  date: ISODate
+  /** Statement month of the (first) payment, for card purchases. */
+  statementMonth?: YearMonth
+  card?: CreditCard
+}
+
 /**
- * Month in which a single-payment purchase is paid: the card's statement month for credit
- * cards (which may be the purchase month), the purchase month for Cash/Pix.
- * An unknown card falls back to the purchase month.
+ * Where a single-payment purchase lands. Credit card: its statement, then the cycle that pays it.
+ * Cash/Pix (or an unknown card): the cycle in progress on the purchase date.
  */
-export function paymentMonth(
-  purchase: Pick<OccasionalExpense, 'purchaseDate' | 'paymentMethod' | 'cardId'>,
-  cards: CardLookup,
-): YearMonth {
-  const card = cardOf(purchase.paymentMethod, purchase.cardId, cards)
-  return card ? billingMonth(card, purchase.purchaseDate) : monthOf(purchase.purchaseDate)
+export function placeOccasional(
+  e: Pick<OccasionalExpense, 'purchaseDate' | 'paymentMethod' | 'cardId'>,
+  ctx: ProjectionContext,
+): Placement {
+  const card = cardOf(e.paymentMethod, e.cardId, ctx.cards)
+  if (card) {
+    const p = placeCardPurchase(card, e.purchaseDate, ctx.defaultPaymentDay)
+    return { cycle: p.cycle, date: toISODate(p.dueDate), statementMonth: p.statementMonth, card }
+  }
+  return { cycle: cycleOfDate(e.purchaseDate, ctx.defaultPaymentDay), date: e.purchaseDate }
 }
 
-/** Month of the first installment: the card's statement month, or the first payment date's month. */
-export function firstInstallmentMonth(
+/** Where installment `k` (0-based) lands. Consecutive installments land in consecutive cycles. */
+export function placeInstallment(
   e: Pick<InstallmentExpense, 'purchaseDate' | 'paymentMethod' | 'cardId' | 'firstPaymentDate'>,
-  cards: CardLookup,
-): YearMonth {
-  const card = cardOf(e.paymentMethod, e.cardId, cards)
-  if (card) return billingMonth(card, e.purchaseDate)
-  return monthOf(e.firstPaymentDate ?? e.purchaseDate)
+  k: number,
+  ctx: ProjectionContext,
+): Placement {
+  const card = cardOf(e.paymentMethod, e.cardId, ctx.cards)
+  if (card) {
+    const first = placeCardPurchase(card, e.purchaseDate, ctx.defaultPaymentDay)
+    const statementMonth = addMonths(first.statementMonth, k)
+    return { cycle: addMonths(first.cycle, k), date: toISODate(statementDueDate(card, statementMonth)), statementMonth, card }
+  }
+  const first = parseISODate(e.firstPaymentDate ?? e.purchaseDate)
+  const month = addMonths(monthOf(first), k)
+  return {
+    cycle: obligationCycle(month, first.day, ctx.defaultPaymentDay),
+    date: toISODate(dateInMonth(month, first.day)),
+  }
 }
 
-/** Charges an expense produces in a given month (zero or one). */
-export function chargesInMonth(expense: Expense, ym: YearMonth, ctx: ProjectionContext): ExpenseCharge[] {
+/** Charges an expense produces in a given cycle (zero or one). */
+export function chargesInCycle(expense: Expense, cycle: FinancialCycle, ctx: ProjectionContext): ExpenseCharge[] {
   const base = { expenseId: expense.id, name: expense.name, type: expense.type }
   switch (expense.type) {
     case 'FIXED':
     case 'SUBSCRIPTION': {
-      const date = recurringPaymentDate(expense, ym, ctx.defaultPaymentDay)
+      const date = recurringPaymentDate(expense, cycle, ctx.defaultPaymentDay)
       return date ? [{ ...base, amount: expense.amount, date }] : []
     }
     case 'OCCASIONAL': {
-      if (!sameMonth(paymentMonth(expense, ctx.cards), ym)) return []
-      const card = cardOf(expense.paymentMethod, expense.cardId, ctx.cards)
-      const date = card ? toISODate(statementDueDate(card, ym)) : expense.purchaseDate
-      return [{ ...base, amount: expense.amount, date, cardName: card?.nickname }]
+      const p = placeOccasional(expense, ctx)
+      if (!sameMonth(p.cycle, cycle)) return []
+      return [{ ...base, amount: expense.amount, date: p.date, statementMonth: p.statementMonth, cardName: p.card?.nickname }]
     }
     case 'INSTALLMENT': {
-      const k = monthsBetween(firstInstallmentMonth(expense, ctx.cards), ym)
+      const k = monthsBetween(placeInstallment(expense, 0, ctx).cycle, cycle)
       if (k < 0 || k >= expense.installmentsCount) return []
-      const card = cardOf(expense.paymentMethod, expense.cardId, ctx.cards)
-      const day = parseISODate(expense.firstPaymentDate ?? expense.purchaseDate).day
-      const date = toISODate(card ? statementDueDate(card, ym) : dateInMonth(ym, day))
+      const p = placeInstallment(expense, k, ctx)
       return [
         {
           ...base,
           amount: expense.installmentAmount,
-          date,
-          cardName: card?.nickname,
+          date: p.date,
+          statementMonth: p.statementMonth,
+          cardName: p.card?.nickname,
           installmentLabel: `${k + 1}/${expense.installmentsCount}`,
         },
       ]
@@ -188,17 +226,17 @@ export function chargesInMonth(expense: Expense, ym: YearMonth, ctx: ProjectionC
   }
 }
 
-/** Last month affected by an expense; `null` for open-ended recurring expenses. */
-export function lastChargeMonth(expense: NewExpense, cards: CreditCard[]): YearMonth | null {
-  const lookup: CardLookup = new Map(cards.map((c) => [c.id, c]))
+/** Last cycle affected by an expense; `null` for open-ended recurring expenses. */
+export function lastChargeCycle(expense: NewExpense, data: Pick<FinancialData, 'cards' | 'defaultPaymentDay'>): FinancialCycle | null {
+  const ctx = projectionContext(data)
   switch (expense.type) {
     case 'FIXED':
     case 'SUBSCRIPTION':
       return null
     case 'OCCASIONAL':
-      return paymentMonth(expense, lookup)
+      return placeOccasional(expense, ctx).cycle
     case 'INSTALLMENT':
-      return addMonths(firstInstallmentMonth(expense, lookup), expense.installmentsCount - 1)
+      return placeInstallment(expense, expense.installmentsCount - 1, ctx).cycle
   }
 }
 
@@ -213,22 +251,29 @@ export function commitmentPercent(expenses: number, income: number): number | nu
   return (expenses / income) * 100
 }
 
-function project(data: FinancialData, ym: YearMonth, ctx: ProjectionContext): MonthProjection {
-  const salary = salaryForMonth(data, ym)
-  const incomeItems: IncomeItem[] = data.incomeSources
-    .filter((s) => incomeAppliesTo(s, ym))
-    .map((s) => ({ sourceId: s.id, name: s.name, amount: s.amount }))
+function project(data: FinancialData, cycle: FinancialCycle, ctx: ProjectionContext): CycleProjection {
+  const day = ctx.defaultPaymentDay
+  const salary = salaryForMonth(data, cycle)
+  const incomeItems: IncomeItem[] = data.incomeSources.flatMap((s) => {
+    const date = incomeDateInCycle(s, cycle, day)
+    return date ? [{ sourceId: s.id, name: s.name, amount: s.amount, date }] : []
+  })
   const otherIncome = sumMoney(incomeItems.map((i) => i.amount))
   const incomeTotal = roundMoney(salary.amount + otherIncome)
 
   const items = data.expenses
-    .flatMap((e) => chargesInMonth(e, ym, ctx))
+    .flatMap((e) => chargesInCycle(e, cycle, ctx))
     .sort((a, b) => a.date.localeCompare(b.date))
   const totalOf = (type: ExpenseType) => sumMoney(items.filter((i) => i.type === type).map((i) => i.amount))
   const expenseTotal = sumMoney(items.map((i) => i.amount))
 
   return {
-    month: ym,
+    cycle,
+    period: {
+      start: toISODate(cycleStart(cycle, day)),
+      end: toISODate(cycleEnd(cycle, day)),
+      settlement: toISODate(cycleSettlementDate(cycle, day)),
+    },
     income: { salary: salary.amount, salarySource: salary.source, other: otherIncome, total: incomeTotal, items: incomeItems },
     expenses: {
       fixed: totalOf('FIXED'),
@@ -243,12 +288,12 @@ function project(data: FinancialData, ym: YearMonth, ctx: ProjectionContext): Mo
   }
 }
 
-export function projectMonth(data: FinancialData, ym: YearMonth): MonthProjection {
-  return project(data, ym, projectionContext(data))
+export function projectCycle(data: FinancialData, cycle: FinancialCycle): CycleProjection {
+  return project(data, cycle, projectionContext(data))
 }
 
-/** Projects `count` consecutive months starting at `start`. Not limited to any horizon. */
-export function projectMonths(data: FinancialData, start: YearMonth, count: number): MonthProjection[] {
+/** Projects `count` consecutive cycles starting at `start`. Not limited to any horizon. */
+export function projectCycles(data: FinancialData, start: FinancialCycle, count: number): CycleProjection[] {
   const ctx = projectionContext(data)
   return Array.from({ length: count }, (_, i) => project(data, addMonths(start, i), ctx))
 }

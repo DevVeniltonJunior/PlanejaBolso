@@ -21,6 +21,12 @@ export const formatMonthLong = (ym: YearMonth) => {
   return `${name[0].toUpperCase()}${name.slice(1)} de ${ym.year}`
 }
 
+/** "Ciclo de outubro de 2026" — a financial cycle is named after the month whose income funds it. */
+export const formatCycleLong = (cycle: YearMonth) => `Ciclo de ${MONTHS[cycle.month - 1]} de ${cycle.year}`
+
+/** "05/10 a 04/11" */
+export const formatPeriod = (start: string, end: string) => `${formatDayMonth(parseISODate(start))} a ${formatDayMonth(parseISODate(end))}`
+
 /** "05/11/2026" */
 export const formatDate = (iso: string) => {
   const d = parseISODate(iso)

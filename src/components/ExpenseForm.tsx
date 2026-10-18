@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { billingMonth, statementDueDate } from '../domain/billing'
+import { placeCardPurchase } from '../domain/cycle'
 import { currentMonth, monthKey, todayISO } from '../domain/dates'
 import {
   CATEGORY_LABEL,
@@ -165,7 +165,8 @@ export function ExpenseForm({
   const card = cards.find((c) => c.id === s.cardId)
   const usesPayment = s.type === 'INSTALLMENT' || s.type === 'OCCASIONAL'
   const isCard = usesPayment && s.paymentMethod === 'CREDIT_CARD'
-  const statement = isCard && card && s.purchaseDate ? billingMonth(card, s.purchaseDate) : null
+  // Same placement rules as the projection: the card's statement, then the cycle that pays it.
+  const placement = isCard && card && s.purchaseDate ? placeCardPurchase(card, s.purchaseDate, defaultPaymentDay) : null
 
   function submit(e: FormEvent) {
     e.preventDefault()
@@ -261,9 +262,9 @@ export function ExpenseForm({
               <Field
                 label="Cartão"
                 hint={
-                  statement &&
-                  card &&
-                  `${s.type === 'INSTALLMENT' ? 'Primeira parcela na fatura' : 'Entra na fatura'} de ${formatMonthShort(statement)} (vence ${formatDayMonth(statementDueDate(card, statement))})`
+                  placement &&
+                  `${s.type === 'INSTALLMENT' ? 'Primeira parcela na fatura' : 'Entra na fatura'} de ${formatMonthShort(placement.statementMonth)} ` +
+                    `(vence ${formatDayMonth(placement.dueDate)}), paga pelo ciclo de ${formatMonthShort(placement.cycle)}`
                 }
               >
                 <select value={s.cardId} onChange={(e) => set('cardId', e.target.value)}>

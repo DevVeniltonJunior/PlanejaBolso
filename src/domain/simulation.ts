@@ -2,9 +2,10 @@
  * Purchase simulator. It never has rules of its own: it adds a temporary hypothetical
  * expense to a *copy* of the projection input and runs the same projection engine.
  */
-import { monthsBetween, type YearMonth } from './dates'
+import type { FinancialCycle } from './cycle'
+import { monthsBetween } from './dates'
 import { roundMoney } from './money'
-import { lastChargeMonth, projectMonths, type MonthProjection } from './projection'
+import { lastChargeCycle, projectCycles, type CycleProjection } from './projection'
 import type { FinancialData, ISODate, NewExpense, PaymentMethod } from './types'
 
 export interface PurchaseSimulationInput {
@@ -19,9 +20,9 @@ export interface PurchaseSimulationInput {
 }
 
 export interface SimulationRow {
-  month: YearMonth
-  before: MonthProjection
-  after: MonthProjection
+  cycle: FinancialCycle
+  before: CycleProjection
+  after: CycleProjection
   balanceDifference: number
 }
 
@@ -65,30 +66,30 @@ export function simulationToExpense(input: PurchaseSimulationInput): NewExpense 
 }
 
 /**
- * Before/after comparison from `start`, covering at least `minMonths` and every month
- * the purchase affects (all installments).
+ * Before/after comparison by financial cycle from `start`, covering at least `minCycles`
+ * and every cycle the purchase affects (all installments).
  */
 export function simulatePurchase(
   data: FinancialData,
   input: PurchaseSimulationInput,
-  start: YearMonth,
-  minMonths = 3,
+  start: FinancialCycle,
+  minCycles = 3,
 ): SimulationResult {
   const expense = simulationToExpense(input)
-  const last = lastChargeMonth(expense, data.cards)
-  const count = Math.max(minMonths, last ? monthsBetween(start, last) + 1 : 0)
+  const last = lastChargeCycle(expense, data)
+  const count = Math.max(minCycles, last ? monthsBetween(start, last) + 1 : 0)
 
   const withPurchase: FinancialData = {
     ...data,
     expenses: [...data.expenses, { ...expense, id: SIMULATION_EXPENSE_ID }],
   }
 
-  const before = projectMonths(data, start, count)
-  const after = projectMonths(withPurchase, start, count)
+  const before = projectCycles(data, start, count)
+  const after = projectCycles(withPurchase, start, count)
   return {
     expense,
     rows: before.map((b, i) => ({
-      month: b.month,
+      cycle: b.cycle,
       before: b,
       after: after[i],
       balanceDifference: roundMoney(after[i].balance - b.balance),

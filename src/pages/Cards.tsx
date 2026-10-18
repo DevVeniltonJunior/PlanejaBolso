@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { DAY_OPTIONS, EmptyState, ErrorMessage, Field, Modal, confirmDelete, useAction } from '../components/ui'
 import { useData, useFinancialData } from '../data/DataContext'
-import { billingMonth, statementClosingDate, statementDueDate } from '../domain/billing'
+import { placeCardPurchase } from '../domain/cycle'
 import { todayISO } from '../domain/dates'
 import { formatDayMonth, formatMonthShort } from '../domain/format'
 import type { CreditCard } from '../domain/types'
@@ -27,7 +27,7 @@ export function CardsPage() {
       ) : (
         <ul className="item-list">
           {data.cards.map((c) => {
-            const next = billingMonth(c, todayISO())
+            const next = placeCardPurchase(c, todayISO(), data.defaultPaymentDay)
             return (
               <li key={c.id} className="item">
                 <div className="item-main">
@@ -36,8 +36,9 @@ export function CardsPage() {
                     Vence dia {c.dueDay} · fecha {c.closingDaysBefore} dias antes
                   </span>
                   <span className="item-sub">
-                    Compras de hoje entram na fatura de <strong>{formatMonthShort(next)}</strong> (fecha{' '}
-                    {formatDayMonth(statementClosingDate(c, next))}, vence {formatDayMonth(statementDueDate(c, next))})
+                    Compras de hoje: fatura de <strong>{formatMonthShort(next.statementMonth)}</strong> (fecha{' '}
+                    {formatDayMonth(next.closingDate)}, vence {formatDayMonth(next.dueDate)}), paga pelo ciclo de{' '}
+                    <strong>{formatMonthShort(next.cycle)}</strong>
                   </span>
                 </div>
                 <div className="item-side">
@@ -69,13 +70,14 @@ export function CardsPage() {
 
 function CardForm({ card, onDone }: { card?: CreditCard; onDone(): void }) {
   const { saveCard } = useData()
+  const { defaultPaymentDay } = useFinancialData()
   const [nickname, setNickname] = useState(card?.nickname ?? '')
   const [dueDay, setDueDay] = useState(String(card?.dueDay ?? 5))
   const [closing, setClosing] = useState(String(card?.closingDaysBefore ?? 7))
   const action = useAction()
 
   const preview: CreditCard = { id: '', nickname, dueDay: Number(dueDay), closingDaysBefore: Number(closing) || 1 }
-  const next = billingMonth(preview, todayISO())
+  const next = placeCardPurchase(preview, todayISO(), defaultPaymentDay)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -102,8 +104,9 @@ function CardForm({ card, onDone }: { card?: CreditCard; onDone(): void }) {
         </Field>
       </div>
       <p className="info">
-        Próxima fatura: {formatMonthShort(next)} — fecha em {formatDayMonth(statementClosingDate(preview, next))} e vence em{' '}
-        {formatDayMonth(statementDueDate(preview, next))}. Compras a partir do dia do fechamento vão para a fatura seguinte.
+        Compras de hoje: fatura de {formatMonthShort(next.statementMonth)} — fecha em {formatDayMonth(next.closingDate)} e vence em{' '}
+        {formatDayMonth(next.dueDate)}, paga pelo ciclo de {formatMonthShort(next.cycle)}. Compras a partir do dia do fechamento vão
+        para a fatura seguinte.
       </p>
       <ErrorMessage error={action.error} />
       <button className="button primary block" disabled={action.busy}>{action.busy ? 'Salvando…' : 'Salvar'}</button>

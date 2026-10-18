@@ -1,9 +1,10 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ExpenseForm } from '../components/ExpenseForm'
 import { DAY_OPTIONS, EmptyState, ErrorMessage, Field, Modal, Money, confirmDelete, useAction } from '../components/ui'
 import { useData, useFinancialData } from '../data/DataContext'
-import { addMonths, currentMonth, monthsBetween, todayISO } from '../domain/dates'
+import { cycleEnd, cycleSettlementDate, cycleStart } from '../domain/cycle'
+import { monthsBetween, toISODate, todayISO } from '../domain/dates'
 import {
   CATEGORY_LABEL,
   EXPENSE_TYPE_LABEL,
@@ -13,10 +14,17 @@ import {
   formatDate,
   formatDayMonth,
   formatMonthShort,
+  formatPeriod,
 } from '../domain/format'
-import { billingMonth, statementDueDate } from '../domain/billing'
-import { effectivePaymentDay, firstInstallmentMonth, installmentTotal, paymentMonth } from '../domain/projection'
-import type { CreditCard, Expense, ExpenseType } from '../domain/types'
+import {
+  currentCycle,
+  effectivePaymentDay,
+  installmentTotal,
+  placeInstallment,
+  placeOccasional,
+  projectionContext,
+} from '../domain/projection'
+import type { Expense, ExpenseType, FinancialData } from '../domain/types'
 
 type Filter = 'ALL' | ExpenseType
 const FILTERS: Filter[] = ['ALL', 'FIXED', 'SUBSCRIPTION', 'INSTALLMENT', 'OCCASIONAL']
@@ -29,7 +37,6 @@ export function ExpensesPage() {
   const [editing, setEditing] = useState<Expense | 'new' | null>(params.get('novo') ? 'new' : null)
   const action = useAction()
 
-  const cards = useMemo(() => new Map(data.cards.map((c) => [c.id, c])), [data.cards])
   const list = data.expenses.filter((e) => filter === 'ALL' || e.type === filter)
 
   function close() {
@@ -65,7 +72,7 @@ export function ExpensesPage() {
               <div className="item-main">
                 <span className={`badge type-${e.type.toLowerCase()}`}>{EXPENSE_TYPE_LABEL[e.type]}</span>
                 <strong className="item-title">{e.name}</strong>
-                <span className="item-sub">{describe(e, cards, data.defaultPaymentDay)}</span>
+                <span className="item-sub">{describe(e, data)}</span>
               </div>
               <div className="item-side">
                 <Money value={e.type === 'INSTALLMENT' ? e.installmentAmount : e.amount} />
@@ -104,12 +111,12 @@ export function ExpensesPage() {
   )
 }
 
-function describe(e: Expense, cards: Map<string, CreditCard>, defaultPaymentDay: number): string {
-  const cardName = (id: string | null) => (id && cards.get(id)?.nickname) || 'cartão'
+function describe(e: Expense, data: FinancialData): string {
+  const ctx = projectionContext(data)
   switch (e.type) {
     case 'FIXED':
     case 'SUBSCRIPTION': {
-      const day = effectivePaymentDay(e, defaultPaymentDay)
+      const day = effectivePaymentDay(e, data.defaultPaymentDay)
       const when =
         (e.recurrence === 'MONTHLY' ? `todo dia ${day}` : `todo ano em ${formatDayMonth({ day, month: e.chargeMonth ?? 1 })}`) +
         (e.paymentDayOverride === null ? ' (dia padrão)' : '')
@@ -117,21 +124,23 @@ function describe(e: Expense, cards: Map<string, CreditCard>, defaultPaymentDay:
       return `${RECURRENCE_LABEL[e.recurrence]} · ${when}${category}`
     }
     case 'INSTALLMENT': {
-      const first = firstInstallmentMonth(e, cards)
-      const last = addMonths(first, e.installmentsCount - 1)
-      const k = monthsBetween(first, currentMonth())
+      const first = placeInstallment(e, 0, ctx)
+      const last = placeInstallment(e, e.installmentsCount - 1, ctx)
+      const k = monthsBetween(first.cycle, currentCycle(data, todayISO()))
       const status =
-        k < 0 ? `começa em ${formatMonthShort(first)}` : k >= e.installmentsCount ? 'quitada' : `parcela ${k + 1}/${e.installmentsCount} este mês`
-      const method = e.paymentMethod === 'CREDIT_CARD' ? cardName(e.cardId) : PAYMENT_LABEL[e.paymentMethod]
-      return `${e.installmentsCount}× · total ${formatBRL(installmentTotal(e))} · ${method} · ${status} · até ${formatMonthShort(last)}`
+        k < 0
+          ? `1ª parcela em ${formatDate(first.date)} (ciclo de ${formatMonthShort(first.cycle)})`
+          : k >= e.installmentsCount
+            ? 'quitada'
+            : `parcela ${k + 1}/${e.installmentsCount} neste ciclo`
+      const method = first.card ? first.card.nickname : PAYMENT_LABEL[e.paymentMethod]
+      return `${e.installmentsCount}× · total ${formatBRL(installmentTotal(e))} · ${method} · ${status} · até o ciclo de ${formatMonthShort(last.cycle)}`
     }
     case 'OCCASIONAL': {
+      const p = placeOccasional(e, ctx)
       const base = `${formatDate(e.purchaseDate)} · `
-      if (e.paymentMethod !== 'CREDIT_CARD') return base + PAYMENT_LABEL[e.paymentMethod]
-      const card = e.cardId ? cards.get(e.cardId) : undefined
-      const month = paymentMonth(e, cards)
-      const due = card ? ` (vence ${formatDayMonth(statementDueDate(card, month))})` : ''
-      return `${base}${cardName(e.cardId)} · fatura de ${formatMonthShort(month)}${due}`
+      if (!p.card || !p.statementMonth) return `${base}${PAYMENT_LABEL[e.paymentMethod]} · ciclo de ${formatMonthShort(p.cycle)}`
+      return `${base}${p.card.nickname} · fatura de ${formatMonthShort(p.statementMonth)} (vence ${formatDate(p.date)}) · ciclo de ${formatMonthShort(p.cycle)}`
     }
   }
 }
@@ -141,12 +150,12 @@ function DefaultPaymentDayCard() {
   const { saveDefaultPaymentDay } = useData()
   const [day, setDay] = useState(String(data.defaultPaymentDay))
   const action = useAction()
-  const sample = data.cards[0]
-  const sampleMonth = sample ? billingMonth(sample, todayISO()) : null
+  const preview = Number(day)
+  const cycle = currentCycle({ defaultPaymentDay: preview }, todayISO())
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    await action.run(() => saveDefaultPaymentDay(Number(day)))
+    await action.run(() => saveDefaultPaymentDay(preview))
   }
 
   return (
@@ -157,14 +166,16 @@ function DefaultPaymentDayCard() {
             {DAY_OPTIONS.map((d) => <option key={d} value={d}>Dia {d}</option>)}
           </select>
         </Field>
-        <button className="button" disabled={action.busy || Number(day) === data.defaultPaymentDay}>
+        <button className="button" disabled={action.busy || preview === data.defaultPaymentDay}>
           {action.busy ? 'Salvando…' : 'Salvar'}
         </button>
       </form>
       <ErrorMessage error={action.error} />
       <p className="footnote">
-        Usado nas despesas fixas e assinaturas sem dia específico. Faturas de cartão sempre usam o vencimento do próprio cartão
-        {sample && sampleMonth ? ` (ex.: ${sample.nickname} vence em ${formatDayMonth(statementDueDate(sample, sampleMonth))})` : ''}.
+        Este dia define seu ciclo financeiro: o ciclo atual ({formatMonthShort(cycle)}) vai de{' '}
+        {formatPeriod(toISODate(cycleStart(cycle, preview)), toISODate(cycleEnd(cycle, preview)))}, e contas que vencem em{' '}
+        {formatDayMonth(cycleSettlementDate(cycle, preview))} ainda são pagas por ele. Despesas fixas e assinaturas sem dia específico
+        são pagas neste dia. Faturas de cartão vencem no dia do próprio cartão e entram no ciclo que as paga.
       </p>
     </section>
   )

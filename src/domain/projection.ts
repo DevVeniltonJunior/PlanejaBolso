@@ -1,8 +1,16 @@
 /**
  * Projection engine — the single source of truth for monthly figures.
  * Dashboard, future months, income commitment and the purchase simulator all use it.
+ *
+ * When an expense is paid:
+ * - Fixed expenses / subscriptions: on the expense's `paymentDayOverride`, or the user's
+ *   `defaultPaymentDay` when there is no override.
+ * - Credit card purchases (single or installments): on the card's own statement due date,
+ *   following the card's real billing cycle. `defaultPaymentDay` never applies to cards.
+ * - Cash / Pix purchases: on the purchase date.
+ * - Non-card installments: monthly from the first payment date.
  */
-import { billingMonth } from './billing'
+import { billingMonth, statementDueDate } from './billing'
 import {
   addMonths,
   compareDates,
@@ -11,6 +19,7 @@ import {
   monthsBetween,
   parseISODate,
   sameMonth,
+  toISODate,
   type YearMonth,
 } from './dates'
 import { roundMoney, sumMoney } from './money'
@@ -20,6 +29,7 @@ import type {
   Expense,
   ExpenseType,
   FinancialData,
+  ISODate,
   IncomeSource,
   InstallmentExpense,
   NewExpense,
@@ -32,6 +42,10 @@ export interface ExpenseCharge {
   name: string
   type: ExpenseType
   amount: number
+  /** Expected payment date in the month (card due date for card purchases). */
+  date: ISODate
+  /** Card nickname, for card purchases. */
+  cardName?: string
   /** e.g. "3/10" for installments. */
   installmentLabel?: string
 }
@@ -57,6 +71,7 @@ export interface MonthProjection {
     subscriptions: number
     occasional: number
     total: number
+    /** Sorted by expected payment date. */
     items: ExpenseCharge[]
   }
   balance: number
@@ -66,22 +81,36 @@ export interface MonthProjection {
 
 type CardLookup = Map<string, CreditCard>
 
-const cardLookup = (cards: CreditCard[]): CardLookup => new Map(cards.map((c) => [c.id, c]))
+/** Inputs the placement rules need besides the expense itself. */
+export interface ProjectionContext {
+  cards: CardLookup
+  defaultPaymentDay: number
+}
+
+export function projectionContext(data: Pick<FinancialData, 'cards' | 'defaultPaymentDay'>): ProjectionContext {
+  return { cards: new Map(data.cards.map((c) => [c.id, c])), defaultPaymentDay: data.defaultPaymentDay }
+}
 
 // ---------------------------------------------------------------- recurrence
 
 interface RecurringRule {
   recurrence: Recurrence
-  chargeDay: number
+  paymentDayOverride: number | null
   chargeMonth: number | null
   startDate: string
 }
 
-/** Whether a monthly/annual charge happens in `ym`, on or after its start date. */
-export function recurringAppliesTo(rule: RecurringRule, ym: YearMonth): boolean {
-  if (rule.recurrence === 'ANNUAL' && rule.chargeMonth !== ym.month) return false
-  const occurrence = dateInMonth(ym, rule.chargeDay)
-  return compareDates(occurrence, parseISODate(rule.startDate)) >= 0
+/** Day of month a regular (fixed/subscription) expense is paid. */
+export function effectivePaymentDay(rule: Pick<RecurringRule, 'paymentDayOverride'>, defaultPaymentDay: number): number {
+  return rule.paymentDayOverride ?? defaultPaymentDay
+}
+
+/** Payment date of a monthly/annual expense in `ym`, or `null` if it is not charged that month. */
+export function recurringPaymentDate(rule: RecurringRule, ym: YearMonth, defaultPaymentDay: number): ISODate | null {
+  if (rule.recurrence === 'ANNUAL' && rule.chargeMonth !== ym.month) return null
+  const date = dateInMonth(ym, effectivePaymentDay(rule, defaultPaymentDay))
+  // Only payments on or after the start date count.
+  return compareDates(date, parseISODate(rule.startDate)) >= 0 ? toISODate(date) : null
 }
 
 export function incomeAppliesTo(source: IncomeSource, ym: YearMonth): boolean {
@@ -99,45 +128,69 @@ export function incomeAppliesTo(source: IncomeSource, ym: YearMonth): boolean {
 
 // ---------------------------------------------------------------- expense placement
 
-/** Month in which a single-payment purchase is paid (statement month for credit cards). */
+const cardOf = (method: string, cardId: string | null, cards: CardLookup) =>
+  method === 'CREDIT_CARD' && cardId ? cards.get(cardId) : undefined
+
+/**
+ * Month in which a single-payment purchase is paid: the card's statement month for credit
+ * cards (which may be the purchase month), the purchase month for Cash/Pix.
+ * An unknown card falls back to the purchase month.
+ */
 export function paymentMonth(
   purchase: Pick<OccasionalExpense, 'purchaseDate' | 'paymentMethod' | 'cardId'>,
   cards: CardLookup,
 ): YearMonth {
-  const card = purchase.paymentMethod === 'CREDIT_CARD' && purchase.cardId ? cards.get(purchase.cardId) : undefined
+  const card = cardOf(purchase.paymentMethod, purchase.cardId, cards)
   return card ? billingMonth(card, purchase.purchaseDate) : monthOf(purchase.purchaseDate)
 }
 
-/** Month of the first installment payment. */
+/** Month of the first installment: the card's statement month, or the first payment date's month. */
 export function firstInstallmentMonth(
   e: Pick<InstallmentExpense, 'purchaseDate' | 'paymentMethod' | 'cardId' | 'firstPaymentDate'>,
   cards: CardLookup,
 ): YearMonth {
-  const card = e.paymentMethod === 'CREDIT_CARD' && e.cardId ? cards.get(e.cardId) : undefined
+  const card = cardOf(e.paymentMethod, e.cardId, cards)
   if (card) return billingMonth(card, e.purchaseDate)
   return monthOf(e.firstPaymentDate ?? e.purchaseDate)
 }
 
 /** Charges an expense produces in a given month (zero or one). */
-export function chargesInMonth(expense: Expense, ym: YearMonth, cards: CardLookup): ExpenseCharge[] {
+export function chargesInMonth(expense: Expense, ym: YearMonth, ctx: ProjectionContext): ExpenseCharge[] {
   const base = { expenseId: expense.id, name: expense.name, type: expense.type }
   switch (expense.type) {
     case 'FIXED':
-    case 'SUBSCRIPTION':
-      return recurringAppliesTo(expense, ym) ? [{ ...base, amount: expense.amount }] : []
-    case 'OCCASIONAL':
-      return sameMonth(paymentMonth(expense, cards), ym) ? [{ ...base, amount: expense.amount }] : []
+    case 'SUBSCRIPTION': {
+      const date = recurringPaymentDate(expense, ym, ctx.defaultPaymentDay)
+      return date ? [{ ...base, amount: expense.amount, date }] : []
+    }
+    case 'OCCASIONAL': {
+      if (!sameMonth(paymentMonth(expense, ctx.cards), ym)) return []
+      const card = cardOf(expense.paymentMethod, expense.cardId, ctx.cards)
+      const date = card ? toISODate(statementDueDate(card, ym)) : expense.purchaseDate
+      return [{ ...base, amount: expense.amount, date, cardName: card?.nickname }]
+    }
     case 'INSTALLMENT': {
-      const k = monthsBetween(firstInstallmentMonth(expense, cards), ym)
+      const k = monthsBetween(firstInstallmentMonth(expense, ctx.cards), ym)
       if (k < 0 || k >= expense.installmentsCount) return []
-      return [{ ...base, amount: expense.installmentAmount, installmentLabel: `${k + 1}/${expense.installmentsCount}` }]
+      const card = cardOf(expense.paymentMethod, expense.cardId, ctx.cards)
+      const day = parseISODate(expense.firstPaymentDate ?? expense.purchaseDate).day
+      const date = toISODate(card ? statementDueDate(card, ym) : dateInMonth(ym, day))
+      return [
+        {
+          ...base,
+          amount: expense.installmentAmount,
+          date,
+          cardName: card?.nickname,
+          installmentLabel: `${k + 1}/${expense.installmentsCount}`,
+        },
+      ]
     }
   }
 }
 
 /** Last month affected by an expense; `null` for open-ended recurring expenses. */
 export function lastChargeMonth(expense: NewExpense, cards: CreditCard[]): YearMonth | null {
-  const lookup = cardLookup(cards)
+  const lookup: CardLookup = new Map(cards.map((c) => [c.id, c]))
   switch (expense.type) {
     case 'FIXED':
     case 'SUBSCRIPTION':
@@ -160,7 +213,7 @@ export function commitmentPercent(expenses: number, income: number): number | nu
   return (expenses / income) * 100
 }
 
-function project(data: FinancialData, ym: YearMonth, cards: CardLookup): MonthProjection {
+function project(data: FinancialData, ym: YearMonth, ctx: ProjectionContext): MonthProjection {
   const salary = salaryForMonth(data, ym)
   const incomeItems: IncomeItem[] = data.incomeSources
     .filter((s) => incomeAppliesTo(s, ym))
@@ -168,7 +221,9 @@ function project(data: FinancialData, ym: YearMonth, cards: CardLookup): MonthPr
   const otherIncome = sumMoney(incomeItems.map((i) => i.amount))
   const incomeTotal = roundMoney(salary.amount + otherIncome)
 
-  const items = data.expenses.flatMap((e) => chargesInMonth(e, ym, cards))
+  const items = data.expenses
+    .flatMap((e) => chargesInMonth(e, ym, ctx))
+    .sort((a, b) => a.date.localeCompare(b.date))
   const totalOf = (type: ExpenseType) => sumMoney(items.filter((i) => i.type === type).map((i) => i.amount))
   const expenseTotal = sumMoney(items.map((i) => i.amount))
 
@@ -189,11 +244,11 @@ function project(data: FinancialData, ym: YearMonth, cards: CardLookup): MonthPr
 }
 
 export function projectMonth(data: FinancialData, ym: YearMonth): MonthProjection {
-  return project(data, ym, cardLookup(data.cards))
+  return project(data, ym, projectionContext(data))
 }
 
 /** Projects `count` consecutive months starting at `start`. Not limited to any horizon. */
 export function projectMonths(data: FinancialData, start: YearMonth, count: number): MonthProjection[] {
-  const cards = cardLookup(data.cards)
-  return Array.from({ length: count }, (_, i) => project(data, addMonths(start, i), cards))
+  const ctx = projectionContext(data)
+  return Array.from({ length: count }, (_, i) => project(data, addMonths(start, i), ctx))
 }

@@ -6,12 +6,13 @@ import type { FinancialData } from '../domain/types'
 
 const sample: FinancialData = {
   fixedSalary: 8000,
+  defaultPaymentDay: 5,
   salaryHistory: [{ id: 's1', referenceMonth: '2026-09-01', netAmount: 6940, receiptDate: '2026-09-05' }],
   incomeSources: [{ id: 'i1', name: 'Aluguel', amount: 1800, type: 'RENT', recurrence: 'MONTHLY', expectedDate: '2026-01-10' }],
   cards: [{ id: 'c1', nickname: 'Final 42', dueDay: 5, closingDaysBefore: 7 }],
   expenses: [
-    { id: 'e1', type: 'FIXED', name: 'Luz', amount: 250, recurrence: 'MONTHLY', category: 'BILL', chargeDay: 10, chargeMonth: null, startDate: '2026-01-01' },
-    { id: 'e2', type: 'SUBSCRIPTION', name: 'Streaming', amount: 39.9, recurrence: 'ANNUAL', chargeDay: 3, chargeMonth: 2, startDate: '2026-01-01' },
+    { id: 'e1', type: 'FIXED', name: 'Luz', amount: 250, recurrence: 'MONTHLY', category: 'BILL', paymentDayOverride: 17, chargeMonth: null, startDate: '2026-01-01' },
+    { id: 'e2', type: 'SUBSCRIPTION', name: 'Streaming', amount: 39.9, recurrence: 'ANNUAL', paymentDayOverride: null, chargeMonth: 2, startDate: '2026-01-01' },
     { id: 'e3', type: 'INSTALLMENT', name: 'Notebook', installmentAmount: 500, installmentsCount: 10, purchaseDate: '2026-10-01', paymentMethod: 'CREDIT_CARD', cardId: 'c1', firstPaymentDate: null },
     { id: 'e4', type: 'OCCASIONAL', name: 'Mercado', amount: 320.5, purchaseDate: '2026-10-12', paymentMethod: 'PIX', cardId: null },
   ],

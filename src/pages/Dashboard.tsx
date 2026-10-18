@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { CommitmentMeter } from '../components/CommitmentMeter'
 import { Money } from '../components/ui'
 import { useFinancialData } from '../data/DataContext'
-import { currentMonth } from '../domain/dates'
+import { currentMonth, parseISODate } from '../domain/dates'
 import { EXPENSE_TYPE_LABEL, EXPENSE_TYPE_PLURAL, formatBRL, formatMonthLong, formatMonthShort, formatPercent } from '../domain/format'
 import { projectMonths, type MonthProjection } from '../domain/projection'
 import type { SalarySource } from '../domain/salary'
@@ -156,16 +156,18 @@ function MonthDetails({ projection: p }: { projection: MonthProjection }) {
           </li>
         ))}
       </ul>
-      <h3>Despesas</h3>
+      <h3>Despesas, por data de pagamento</h3>
       {p.expenses.items.length === 0 ? (
         <p className="muted">Nenhuma despesa prevista neste mês.</p>
       ) : (
         <ul className="line-list">
-          {[...p.expenses.items].sort((a, b) => b.amount - a.amount).map((e, idx) => (
+          {p.expenses.items.map((e, idx) => (
             <li key={`${e.expenseId}-${idx}`}>
               <span>
+                <small className="muted day">dia {parseISODate(e.date).day}</small>{' '}
                 <span className={`badge type-${e.type.toLowerCase()}`}>{EXPENSE_TYPE_LABEL[e.type]}</span> {e.name}
                 {e.installmentLabel && <small className="muted"> ({e.installmentLabel})</small>}
+                {e.cardName && <small className="muted"> · fatura {e.cardName}</small>}
               </span>
               <Money value={e.amount} />
             </li>

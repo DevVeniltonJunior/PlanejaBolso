@@ -240,3 +240,4 @@ input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: 1
   .modal-backdrop { align-items: center; padding: 2rem; }
   .modal { max-width: 520px; border-radius: 18px; }
 }
+.line-list .day { display: inline-block; min-width: 3.2em; font-variant-numeric: tabular-nums; }

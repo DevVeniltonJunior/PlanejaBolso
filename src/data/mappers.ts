@@ -57,7 +57,7 @@ export function expenseFromRow(r: Row): Expense {
       const recurring = {
         amount: Number(r.amount),
         recurrence: r.recurrence,
-        chargeDay: r.charge_day,
+        paymentDayOverride: num(r.payment_day_override),
         chargeMonth: num(r.charge_month),
         startDate: r.start_date,
       }
@@ -91,7 +91,7 @@ export function expenseFromRow(r: Row): Expense {
 /** Full row, with unused type-specific columns explicitly nulled (so edits that change type stay consistent). */
 export function expenseToRow(e: NewExpense): Row {
   const empty: Row = {
-    recurrence: null, category: null, charge_day: null, charge_month: null, start_date: null,
+    recurrence: null, category: null, payment_day_override: null, charge_month: null, start_date: null,
     installments_count: null, first_payment_date: null, purchase_date: null, payment_method: null, card_id: null,
   }
   const common = { ...empty, type: e.type, name: e.name }
@@ -103,7 +103,7 @@ export function expenseToRow(e: NewExpense): Row {
         amount: e.amount,
         recurrence: e.recurrence,
         category: e.type === 'FIXED' ? e.category : null,
-        charge_day: e.chargeDay,
+        payment_day_override: e.paymentDayOverride,
         charge_month: e.recurrence === 'ANNUAL' ? e.chargeMonth : null,
         start_date: e.startDate,
       }

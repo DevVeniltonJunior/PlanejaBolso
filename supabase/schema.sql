@@ -9,7 +9,9 @@
 create table if not exists public.profiles (
   user_id uuid primary key default auth.uid() references auth.users (id) on delete cascade,
   fixed_salary numeric(12, 2) check (fixed_salary is null or fixed_salary >= 0),
-  -- Day the user normally pays regular expenses. Never applies to credit card statements.
+  -- Day the user normally pays regular expenses. It is also the boundary of the user's
+  -- financial cycles (day 5: the October cycle runs 05/10 → 04/11). It never changes a card
+  -- statement's due date; it only decides which cycle pays that statement.
   default_payment_day smallint not null default 5 check (default_payment_day between 1 and 31),
   updated_at timestamptz not null default now()
 );
@@ -57,7 +59,8 @@ create table if not exists public.expenses (
   -- FIXED / SUBSCRIPTION
   recurrence text check (recurrence in ('MONTHLY', 'ANNUAL')),
   category text check (category in ('BILL', 'TAX', 'OTHER')),
-  -- Payment day when it differs from profiles.default_payment_day; null = use the default
+  -- Payment day of a fixed expense/subscription when it differs from profiles.default_payment_day
+  -- (e.g. a car payment on day 17); null = use the default
   payment_day_override smallint check (payment_day_override between 1 and 31),
   charge_month smallint check (charge_month between 1 and 12),
   start_date date,

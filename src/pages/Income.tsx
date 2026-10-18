@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { EmptyState, ErrorMessage, Field, Modal, Money, confirmDelete, useAction } from '../components/ui'
 import { useData, useFinancialData } from '../data/DataContext'
 import { addMonths, currentMonth, monthKey, monthOf, parseISODate, todayISO } from '../domain/dates'
+import { currentCycle } from '../domain/projection'
 import {
   INCOME_RECURRENCE_LABEL,
   INCOME_TYPE_LABEL,
@@ -60,7 +61,7 @@ function FixedSalaryCard() {
   const [value, setValue] = useState(moneyInputValue(data.fixedSalary))
   const [saved, setSaved] = useState(false)
   const action = useAction()
-  const projected = salaryForMonth(data, addMonths(currentMonth(), 1))
+  const projected = salaryForMonth(data, addMonths(currentCycle(data, todayISO()), 1))
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -82,7 +83,7 @@ function FixedSalaryCard() {
       <ErrorMessage error={action.error} />
       {saved && <p className="info">Salário salvo.</p>}
       <p className="footnote">
-        Usado nas projeções dos próximos meses: <strong>{formatBRL(projected.amount)}</strong>{' '}
+        Usado nas projeções dos próximos ciclos: <strong>{formatBRL(projected.amount)}</strong>{' '}
         {projected.source === 'AVERAGE' && '(média dos salários líquidos)'}
         {projected.source === 'FIXED' && '(salário fixo)'}
       </p>
@@ -111,7 +112,7 @@ function SalaryHistoryCard({ onEdit }: { onEdit(e: SalaryEntry | 'new'): void })
       )}
       <p className="footnote">
         A média usa os {SALARY_AVERAGE_WINDOW} meses mais recentes e passa a ser usada nas projeções a partir de {MIN_ENTRIES_FOR_AVERAGE} registros.
-        No mês em que há salário registrado, o valor registrado é usado.
+        O salário de um mês financia o ciclo daquele mês; quando há salário registrado para o mês, o valor registrado é usado.
       </p>
       {data.salaryHistory.length === 0 ? (
         <EmptyState>Nenhum salário registrado ainda.</EmptyState>
@@ -232,7 +233,7 @@ function IncomeSourcesCard({ onEdit }: { onEdit(s: IncomeSource | 'new'): void }
 const DATE_HINT: Record<IncomeRecurrence, string> = {
   MONTHLY: 'Data do primeiro recebimento. Repete todo mês no mesmo dia.',
   ANNUAL: 'Data do primeiro recebimento. Repete todo ano no mesmo dia e mês.',
-  OCCASIONAL: 'Afeta apenas o mês desta data.',
+  OCCASIONAL: 'Afeta apenas o ciclo financeiro desta data.',
 }
 
 function IncomeSourceForm({ source, onDone }: { source?: IncomeSource; onDone(): void }) {

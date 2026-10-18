@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom'
 import { CommitmentMeter } from '../components/CommitmentMeter'
 import { ErrorMessage, Field, Money, useAction } from '../components/ui'
 import { useData, useFinancialData } from '../data/DataContext'
-import { currentMonth, todayISO } from '../domain/dates'
-import { PAYMENT_LABEL, formatBRL, formatMonthLong, formatMonthShort, formatPercent } from '../domain/format'
+import { placeCardPurchase } from '../domain/cycle'
+import { todayISO } from '../domain/dates'
+import { PAYMENT_LABEL, formatBRL, formatCycleLong, formatDayMonth, formatMonthShort, formatPercent, formatPeriod } from '../domain/format'
 import { parseMoney } from '../domain/money'
+import { currentCycle } from '../domain/projection'
 import { installmentAmountFor, simulatePurchase, type PurchaseSimulationInput } from '../domain/simulation'
 import type { PaymentMethod } from '../domain/types'
 
@@ -32,7 +34,9 @@ export function SimulatorPage() {
       : null
 
   // Cheap to compute; recalculated on every change so it always matches the dashboard.
-  const result = input && !added ? simulatePurchase(data, input, currentMonth()) : null
+  const result = input && !added ? simulatePurchase(data, input, currentCycle(data, todayISO())) : null
+  const card = isCard ? data.cards.find((c) => c.id === cardId) : undefined
+  const placement = card ? placeCardPurchase(card, todayISO(), data.defaultPaymentDay) : null
 
   const firstImpact = result?.rows.find((r) => r.balanceDifference !== 0) ?? result?.rows[0]
 
@@ -96,13 +100,23 @@ export function SimulatorPage() {
                 )}
               </>
             ))}
+          {placement && (
+            <p className="info">
+              Uma compra hoje entra na fatura de {formatMonthShort(placement.statementMonth)} (fecha{' '}
+              {formatDayMonth(placement.closingDate)}, vence {formatDayMonth(placement.dueDate)}), paga pelo{' '}
+              {formatCycleLong(placement.cycle).toLowerCase()}
+              {count > 1 ? '; as demais parcelas seguem nos ciclos seguintes' : ''}.
+            </p>
+          )}
         </div>
       </section>
 
       {result && firstImpact && (
         <>
           <section className="card comparison">
-            <p className="eyebrow">Comprometimento da renda em {formatMonthLong(firstImpact.month)}</p>
+            <p className="eyebrow">
+              Comprometimento da renda · {formatCycleLong(firstImpact.cycle)} ({formatPeriod(firstImpact.before.period.start, firstImpact.before.period.end)})
+            </p>
             <div className="compare">
               <div>
                 <span className="muted">Hoje</span>
@@ -121,18 +135,18 @@ export function SimulatorPage() {
               Deve sobrar <Money value={firstImpact.before.balance} /> → <strong><Money value={firstImpact.after.balance} /></strong>
             </p>
             {firstImpact.after.balance < 0 && (
-              <p className="warning">Com esta compra, as despesas previstas de {formatMonthShort(firstImpact.month)} superam a renda prevista.</p>
+              <p className="warning">Com esta compra, as despesas previstas do ciclo de {formatMonthShort(firstImpact.cycle)} superam a renda prevista.</p>
             )}
             <p className="footnote">Simulação baseada nas suas despesas e rendas registradas. É uma projeção, não uma recomendação.</p>
           </section>
 
           <section className="card">
-            <h2>Mês a mês</h2>
+            <h2>Ciclo a ciclo</h2>
             <div className="table-scroll">
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Mês</th>
+                    <th>Ciclo</th>
                     <th className="num">Sobra hoje</th>
                     <th className="num">Com a compra</th>
                     <th className="num">Compr.</th>
@@ -141,7 +155,7 @@ export function SimulatorPage() {
                 <tbody>
                   {result.rows.map((r, i) => (
                     <tr key={i} className={r.balanceDifference !== 0 ? 'affected' : ''}>
-                      <td>{formatMonthShort(r.month)}</td>
+                      <td>{formatMonthShort(r.cycle)}</td>
                       <td className="num"><Money value={r.before.balance} /></td>
                       <td className="num">
                         <strong><Money value={r.after.balance} /></strong>

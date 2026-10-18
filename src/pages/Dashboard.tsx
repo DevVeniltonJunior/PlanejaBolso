@@ -3,9 +3,18 @@ import { Link } from 'react-router-dom'
 import { CommitmentMeter } from '../components/CommitmentMeter'
 import { Money } from '../components/ui'
 import { useFinancialData } from '../data/DataContext'
-import { currentMonth, parseISODate } from '../domain/dates'
-import { EXPENSE_TYPE_LABEL, EXPENSE_TYPE_PLURAL, formatBRL, formatMonthLong, formatMonthShort, formatPercent } from '../domain/format'
-import { projectMonths, type MonthProjection } from '../domain/projection'
+import { parseISODate, todayISO } from '../domain/dates'
+import {
+  EXPENSE_TYPE_LABEL,
+  EXPENSE_TYPE_PLURAL,
+  formatBRL,
+  formatCycleLong,
+  formatDayMonth,
+  formatMonthShort,
+  formatPercent,
+  formatPeriod,
+} from '../domain/format'
+import { currentCycle, projectCycles, type CycleProjection } from '../domain/projection'
 import type { SalarySource } from '../domain/salary'
 
 const SALARY_SOURCE_LABEL: Record<SalarySource, string> = {
@@ -21,14 +30,16 @@ export function DashboardPage() {
   const data = useFinancialData()
   const [horizon, setHorizon] = useState(3)
   const [showDetails, setShowDetails] = useState(false)
-  const months = useMemo(() => projectMonths(data, currentMonth(), 12), [data])
-  const current = months[0]
+  const cycles = useMemo(() => projectCycles(data, currentCycle(data, todayISO()), 12), [data])
+  const current = cycles[0]
   const isEmpty = data.fixedSalary === null && data.salaryHistory.length === 0 && data.expenses.length === 0
 
   return (
     <div className="page">
       <section className="card hero">
-        <p className="eyebrow">Previsão para {formatMonthLong(current.month)}</p>
+        <p className="eyebrow">
+          {formatCycleLong(current.cycle)} · {formatPeriod(current.period.start, current.period.end)}
+        </p>
 
         <div className="hero-balance">
           <span className="muted">Deve sobrar</span>
@@ -57,6 +68,10 @@ export function DashboardPage() {
             : `${formatPercent(current.commitment)} da sua renda prevista já está comprometida com despesas registradas.`}{' '}
           Valores são uma projeção, não o saldo da sua conta.
         </p>
+        <p className="footnote">
+          Seu ciclo começa no dia de pagamento (dia {data.defaultPaymentDay}) e vai até a véspera do próximo. Contas que vencem em{' '}
+          {formatDayMonth(parseISODate(current.period.settlement))} fecham este ciclo. <Link to="/despesas">Alterar o dia</Link>
+        </p>
 
         <div className="actions">
           <Link className="button primary" to="/simular">Simular compra</Link>
@@ -77,7 +92,7 @@ export function DashboardPage() {
       )}
 
       <section className="card">
-        <h2>Despesas deste mês</h2>
+        <h2>Despesas deste ciclo</h2>
         <div className="breakdown">
           {(['FIXED', 'INSTALLMENT', 'SUBSCRIPTION', 'OCCASIONAL'] as const).map((type) => (
             <div key={type} className={`breakdown-item type-${type.toLowerCase()}`}>
@@ -87,18 +102,18 @@ export function DashboardPage() {
           ))}
         </div>
         <button className="link-button" onClick={() => setShowDetails((v) => !v)}>
-          {showDetails ? 'Ocultar detalhes' : 'Ver detalhes do mês'}
+          {showDetails ? 'Ocultar detalhes' : 'Ver detalhes do ciclo'}
         </button>
-        {showDetails && <MonthDetails projection={current} />}
+        {showDetails && <CycleDetails projection={current} />}
       </section>
 
       <section className="card">
         <div className="section-header">
-          <h2>Próximos meses</h2>
+          <h2>Próximos ciclos</h2>
           <div className="segmented small">
             {HORIZONS.map((h) => (
               <button key={h} className={h === horizon ? 'active' : ''} onClick={() => setHorizon(h)}>
-                {h} meses
+                {h} ciclos
               </button>
             ))}
           </div>
@@ -107,7 +122,7 @@ export function DashboardPage() {
           <table className="table">
             <thead>
               <tr>
-                <th>Mês</th>
+                <th>Ciclo</th>
                 <th className="num">Renda</th>
                 <th className="num">Despesas</th>
                 <th className="num">Sobra</th>
@@ -115,9 +130,12 @@ export function DashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {months.slice(0, horizon).map((m, i) => (
+              {cycles.slice(0, horizon).map((m, i) => (
                 <tr key={i} className={i === 0 ? 'current' : ''}>
-                  <td>{formatMonthShort(m.month)}</td>
+                  <td>
+                    {formatMonthShort(m.cycle)}
+                    <small className="muted period">{formatPeriod(m.period.start, m.period.end)}</small>
+                  </td>
                   <td className="num">{formatBRL(m.income.total)}</td>
                   <td className="num">{formatBRL(m.expenses.total)}</td>
                   <td className="num"><Money value={m.balance} /></td>
@@ -128,35 +146,36 @@ export function DashboardPage() {
           </table>
         </div>
         <p className="footnote">
-          Meses futuros incluem despesas fixas, assinaturas, parcelas e compras já registradas que caem nessas faturas.
-          Gastos avulsos futuros ainda não existem e não são estimados.
+          Cada ciclo inclui despesas fixas, assinaturas, parcelas e as faturas de cartão que ele paga. Uma compra no cartão entra
+          no ciclo que paga a fatura dela, não no mês da compra. Gastos avulsos futuros ainda não existem e não são estimados.
         </p>
       </section>
     </div>
   )
 }
 
-function breakdownValue(p: MonthProjection, type: 'FIXED' | 'INSTALLMENT' | 'SUBSCRIPTION' | 'OCCASIONAL') {
+function breakdownValue(p: CycleProjection, type: 'FIXED' | 'INSTALLMENT' | 'SUBSCRIPTION' | 'OCCASIONAL') {
   return { FIXED: p.expenses.fixed, INSTALLMENT: p.expenses.installments, SUBSCRIPTION: p.expenses.subscriptions, OCCASIONAL: p.expenses.occasional }[type]
 }
 
-function MonthDetails({ projection: p }: { projection: MonthProjection }) {
+function CycleDetails({ projection: p }: { projection: CycleProjection }) {
   return (
     <div className="details">
       <h3>Renda</h3>
       <ul className="line-list">
         <li>
-          <span>Salário <small className="muted">({SALARY_SOURCE_LABEL[p.income.salarySource]})</small></span>
+          <span>Salário de {formatMonthShort(p.cycle)} <small className="muted">({SALARY_SOURCE_LABEL[p.income.salarySource]})</small></span>
           <Money value={p.income.salary} />
         </li>
         {p.income.items.map((i) => (
           <li key={i.sourceId}>
-            <span>{i.name}</span>
+            <span><small className="muted day">{formatDayMonth(parseISODate(i.date))}</small> {i.name}</span>
             <Money value={i.amount} />
           </li>
         ))}
       </ul>
       <h3>Despesas, por data de pagamento</h3>
+      <p className="footnote">Faturas de cartão aparecem na data de vencimento do cartão.</p>
       {p.expenses.items.length === 0 ? (
         <p className="muted">Nenhuma despesa prevista neste mês.</p>
       ) : (
@@ -164,10 +183,12 @@ function MonthDetails({ projection: p }: { projection: MonthProjection }) {
           {p.expenses.items.map((e, idx) => (
             <li key={`${e.expenseId}-${idx}`}>
               <span>
-                <small className="muted day">dia {parseISODate(e.date).day}</small>{' '}
+                <small className="muted day">{formatDayMonth(parseISODate(e.date))}</small>{' '}
                 <span className={`badge type-${e.type.toLowerCase()}`}>{EXPENSE_TYPE_LABEL[e.type]}</span> {e.name}
                 {e.installmentLabel && <small className="muted"> ({e.installmentLabel})</small>}
-                {e.cardName && <small className="muted"> · fatura {e.cardName}</small>}
+                {e.cardName && e.statementMonth && (
+                  <small className="muted"> · fatura {e.cardName} de {formatMonthShort(e.statementMonth)}</small>
+                )}
               </span>
               <Money value={e.amount} />
             </li>

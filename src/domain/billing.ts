@@ -14,15 +14,18 @@ export function statementClosingDate(card: CardBilling, statementMonth: YearMont
 }
 
 /**
- * Month of the statement (identified by its due month) that a purchase falls into.
+ * Month of the statement (identified by its due month) that a purchase falls into,
+ * following the card's real billing cycle — only purchase date, closing date and due date matter.
  *
- * A purchase made before the closing date belongs to that statement; a purchase made
- * on or after the closing date goes to the following one (the usual Brazilian rule —
- * the closing day is the "best day to buy").
+ * The purchase belongs to the first statement whose closing date is after it:
+ * - before the upcoming statement's closing date → that statement, even if it is due
+ *   in the purchase month itself (e.g. due on the 25th, closing on the 18th);
+ * - on or after the closing date → the following statement.
+ * The closing day itself is the "best day to buy": it already goes to the following statement.
  */
 export function billingMonth(card: CardBilling, purchaseDate: ISODate): YearMonth {
   const purchase = parseISODate(purchaseDate)
-  // No statement due before the purchase month can close after the purchase,
+  // A statement due before the purchase month always closed before the purchase,
   // so the search starts at the purchase month and walks forward.
   let candidate = monthOf(purchase)
   for (let i = 0; i < 24; i++) {

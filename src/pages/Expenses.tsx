@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ExpenseForm } from '../components/ExpenseForm'
-import { EmptyState, Modal, Money, confirmDelete, useAction } from '../components/ui'
+import { DAY_OPTIONS, EmptyState, ErrorMessage, Field, Modal, Money, confirmDelete, useAction } from '../components/ui'
 import { useData, useFinancialData } from '../data/DataContext'
-import { addMonths, currentMonth, monthsBetween } from '../domain/dates'
+import { addMonths, currentMonth, monthsBetween, todayISO } from '../domain/dates'
 import {
   CATEGORY_LABEL,
   EXPENSE_TYPE_LABEL,
@@ -14,7 +14,8 @@ import {
   formatDayMonth,
   formatMonthShort,
 } from '../domain/format'
-import { firstInstallmentMonth, installmentTotal, paymentMonth } from '../domain/projection'
+import { billingMonth, statementDueDate } from '../domain/billing'
+import { effectivePaymentDay, firstInstallmentMonth, installmentTotal, paymentMonth } from '../domain/projection'
 import type { CreditCard, Expense, ExpenseType } from '../domain/types'
 
 type Filter = 'ALL' | ExpenseType
@@ -44,6 +45,8 @@ export function ExpensesPage() {
         <button className="button primary" onClick={() => setEditing('new')}>+ Nova despesa</button>
       </div>
 
+      <DefaultPaymentDayCard />
+
       <div className="chips">
         {FILTERS.map((f) => (
           <button key={f} className={`chip${filter === f ? ' active' : ''}`} onClick={() => setFilter(f)}>
@@ -62,7 +65,7 @@ export function ExpensesPage() {
               <div className="item-main">
                 <span className={`badge type-${e.type.toLowerCase()}`}>{EXPENSE_TYPE_LABEL[e.type]}</span>
                 <strong className="item-title">{e.name}</strong>
-                <span className="item-sub">{describe(e, cards)}</span>
+                <span className="item-sub">{describe(e, cards, data.defaultPaymentDay)}</span>
               </div>
               <div className="item-side">
                 <Money value={e.type === 'INSTALLMENT' ? e.installmentAmount : e.amount} />
@@ -88,6 +91,7 @@ export function ExpensesPage() {
             initial={editing === 'new' ? undefined : editing}
             initialType={filter === 'ALL' ? 'OCCASIONAL' : filter}
             cards={data.cards}
+            defaultPaymentDay={data.defaultPaymentDay}
             busy={action.busy}
             error={action.error}
             onSubmit={async (expense) => {
@@ -100,13 +104,15 @@ export function ExpensesPage() {
   )
 }
 
-function describe(e: Expense, cards: Map<string, CreditCard>): string {
+function describe(e: Expense, cards: Map<string, CreditCard>, defaultPaymentDay: number): string {
   const cardName = (id: string | null) => (id && cards.get(id)?.nickname) || 'cartão'
   switch (e.type) {
     case 'FIXED':
     case 'SUBSCRIPTION': {
+      const day = effectivePaymentDay(e, defaultPaymentDay)
       const when =
-        e.recurrence === 'MONTHLY' ? `todo dia ${e.chargeDay}` : `todo ano em ${formatDayMonth({ day: e.chargeDay, month: e.chargeMonth ?? 1 })}`
+        (e.recurrence === 'MONTHLY' ? `todo dia ${day}` : `todo ano em ${formatDayMonth({ day, month: e.chargeMonth ?? 1 })}`) +
+        (e.paymentDayOverride === null ? ' (dia padrão)' : '')
       const category = e.type === 'FIXED' ? ` · ${CATEGORY_LABEL[e.category]}` : ''
       return `${RECURRENCE_LABEL[e.recurrence]} · ${when}${category}`
     }
@@ -122,7 +128,44 @@ function describe(e: Expense, cards: Map<string, CreditCard>): string {
     case 'OCCASIONAL': {
       const base = `${formatDate(e.purchaseDate)} · `
       if (e.paymentMethod !== 'CREDIT_CARD') return base + PAYMENT_LABEL[e.paymentMethod]
-      return `${base}${cardName(e.cardId)} · fatura de ${formatMonthShort(paymentMonth(e, cards))}`
+      const card = e.cardId ? cards.get(e.cardId) : undefined
+      const month = paymentMonth(e, cards)
+      const due = card ? ` (vence ${formatDayMonth(statementDueDate(card, month))})` : ''
+      return `${base}${cardName(e.cardId)} · fatura de ${formatMonthShort(month)}${due}`
     }
   }
+}
+
+function DefaultPaymentDayCard() {
+  const data = useFinancialData()
+  const { saveDefaultPaymentDay } = useData()
+  const [day, setDay] = useState(String(data.defaultPaymentDay))
+  const action = useAction()
+  const sample = data.cards[0]
+  const sampleMonth = sample ? billingMonth(sample, todayISO()) : null
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    await action.run(() => saveDefaultPaymentDay(Number(day)))
+  }
+
+  return (
+    <section className="card">
+      <form className="inline-form" onSubmit={submit}>
+        <Field label="Dia em que costumo pagar minhas contas">
+          <select value={day} onChange={(e) => setDay(e.target.value)}>
+            {DAY_OPTIONS.map((d) => <option key={d} value={d}>Dia {d}</option>)}
+          </select>
+        </Field>
+        <button className="button" disabled={action.busy || Number(day) === data.defaultPaymentDay}>
+          {action.busy ? 'Salvando…' : 'Salvar'}
+        </button>
+      </form>
+      <ErrorMessage error={action.error} />
+      <p className="footnote">
+        Usado nas despesas fixas e assinaturas sem dia específico. Faturas de cartão sempre usam o vencimento do próprio cartão
+        {sample && sampleMonth ? ` (ex.: ${sample.nickname} vence em ${formatDayMonth(statementDueDate(sample, sampleMonth))})` : ''}.
+      </p>
+    </section>
+  )
 }

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { billingMonth } from '../domain/billing'
+import { billingMonth, statementDueDate } from '../domain/billing'
 import { currentMonth, monthKey, todayISO } from '../domain/dates'
 import {
   CATEGORY_LABEL,
@@ -7,6 +7,7 @@ import {
   PAYMENT_LABEL,
   RECURRENCE_LABEL,
   formatBRL,
+  formatDayMonth,
   formatMonthShort,
   monthName,
   moneyInputValue,
@@ -21,7 +22,8 @@ interface FormState {
   amount: string
   recurrence: Recurrence
   category: FixedCategory
-  chargeDay: string
+  /** '' = use the user's default payment day. */
+  paymentDay: string
   chargeMonth: string
   startDate: string
   installmentsCount: string
@@ -38,7 +40,7 @@ function initialState(initial: Expense | undefined, type: ExpenseType, cards: Cr
     amount: '',
     recurrence: 'MONTHLY',
     category: 'BILL',
-    chargeDay: '10',
+    paymentDay: '',
     chargeMonth: String(new Date().getMonth() + 1),
     startDate: `${monthKey(currentMonth())}-01`,
     installmentsCount: '2',
@@ -55,7 +57,7 @@ function initialState(initial: Expense | undefined, type: ExpenseType, cards: Cr
     case 'SUBSCRIPTION':
       s.amount = moneyInputValue(initial.amount)
       s.recurrence = initial.recurrence
-      s.chargeDay = String(initial.chargeDay)
+      s.paymentDay = initial.paymentDayOverride === null ? '' : String(initial.paymentDayOverride)
       s.chargeMonth = String(initial.chargeMonth ?? s.chargeMonth)
       s.startDate = initial.startDate
       if (initial.type === 'FIXED') s.category = initial.category
@@ -95,7 +97,7 @@ function build(s: FormState, cards: CreditCard[]): NewExpense | string {
         name,
         amount,
         recurrence: s.recurrence,
-        chargeDay: Number(s.chargeDay),
+        paymentDayOverride: s.paymentDay ? Number(s.paymentDay) : null,
         chargeMonth: s.recurrence === 'ANNUAL' ? Number(s.chargeMonth) : null,
         startDate: s.startDate,
       }
@@ -142,6 +144,7 @@ export function ExpenseForm({
   initial,
   initialType = 'OCCASIONAL',
   cards,
+  defaultPaymentDay,
   busy,
   error,
   onSubmit,
@@ -149,6 +152,7 @@ export function ExpenseForm({
   initial?: Expense
   initialType?: ExpenseType
   cards: CreditCard[]
+  defaultPaymentDay: number
   busy: boolean
   error: string | null
   onSubmit(expense: NewExpense): void
@@ -208,9 +212,10 @@ export function ExpenseForm({
             )}
           </div>
           <div className="row">
-            <Field label="Dia da cobrança">
-              <select value={s.chargeDay} onChange={(e) => set('chargeDay', e.target.value)}>
-                {DAY_OPTIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+            <Field label="Dia do pagamento">
+              <select value={s.paymentDay} onChange={(e) => set('paymentDay', e.target.value)}>
+                <option value="">Dia padrão ({defaultPaymentDay})</option>
+                {DAY_OPTIONS.map((d) => <option key={d} value={d}>Dia {d}</option>)}
               </select>
             </Field>
             {s.recurrence === 'ANNUAL' && (
@@ -221,7 +226,11 @@ export function ExpenseForm({
               </Field>
             )}
           </div>
-          <Field label="Começa em" hint="A primeira cobrança considerada é a que cai nesta data ou depois.">
+          <p className="field-hint">
+            Use um dia específico só para contas pagas em outra data (ex.: financiamento do carro no dia 17). O dia padrão é
+            configurado na tela de despesas.
+          </p>
+          <Field label="Começa em" hint="O primeiro pagamento considerado é o que cai nesta data ou depois.">
             <input type="date" value={s.startDate} onChange={(e) => set('startDate', e.target.value)} required />
           </Field>
         </>
@@ -251,7 +260,11 @@ export function ExpenseForm({
             ) : (
               <Field
                 label="Cartão"
-                hint={statement && `${s.type === 'INSTALLMENT' ? 'Primeira parcela na fatura' : 'Entra na fatura'} de ${formatMonthShort(statement)}`}
+                hint={
+                  statement &&
+                  card &&
+                  `${s.type === 'INSTALLMENT' ? 'Primeira parcela na fatura' : 'Entra na fatura'} de ${formatMonthShort(statement)} (vence ${formatDayMonth(statementDueDate(card, statement))})`
+                }
               >
                 <select value={s.cardId} onChange={(e) => set('cardId', e.target.value)}>
                   {cards.map((c) => <option key={c.id} value={c.id}>{c.nickname}</option>)}

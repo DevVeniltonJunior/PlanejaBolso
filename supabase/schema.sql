@@ -1,5 +1,6 @@
 -- PlanejaBolso — prototype schema.
--- Run once in the Supabase SQL editor (Dashboard → SQL Editor → New query).
+-- Run once in the Supabase SQL editor (Dashboard → SQL Editor → New query) on a new project.
+-- Databases created from an earlier version: apply the files in supabase/migrations/ instead.
 -- Every table is owned by auth.users and protected by Row Level Security:
 -- an authenticated user can only read and write their own rows.
 
@@ -8,6 +9,8 @@
 create table if not exists public.profiles (
   user_id uuid primary key default auth.uid() references auth.users (id) on delete cascade,
   fixed_salary numeric(12, 2) check (fixed_salary is null or fixed_salary >= 0),
+  -- Day the user normally pays regular expenses. Never applies to credit card statements.
+  default_payment_day smallint not null default 5 check (default_payment_day between 1 and 31),
   updated_at timestamptz not null default now()
 );
 
@@ -54,7 +57,8 @@ create table if not exists public.expenses (
   -- FIXED / SUBSCRIPTION
   recurrence text check (recurrence in ('MONTHLY', 'ANNUAL')),
   category text check (category in ('BILL', 'TAX', 'OTHER')),
-  charge_day smallint check (charge_day between 1 and 31),
+  -- Payment day when it differs from profiles.default_payment_day; null = use the default
+  payment_day_override smallint check (payment_day_override between 1 and 31),
   charge_month smallint check (charge_month between 1 and 12),
   start_date date,
   -- INSTALLMENT
@@ -67,15 +71,16 @@ create table if not exists public.expenses (
   created_at timestamptz not null default now(),
   -- The referenced card must belong to the same user; cards in use cannot be deleted.
   foreign key (card_id, user_id) references public.credit_cards (id, user_id) on delete restrict,
-  check (
+  constraint expenses_type_fields_check check (
     case type
-      when 'FIXED' then recurrence is not null and category is not null and charge_day is not null and start_date is not null
+      when 'FIXED' then recurrence is not null and category is not null and start_date is not null
         and (recurrence = 'MONTHLY' or charge_month is not null)
-      when 'SUBSCRIPTION' then recurrence is not null and charge_day is not null and start_date is not null
+      when 'SUBSCRIPTION' then recurrence is not null and start_date is not null
         and (recurrence = 'MONTHLY' or charge_month is not null)
-      when 'INSTALLMENT' then installments_count is not null and purchase_date is not null and payment_method is not null
+      -- Card purchases follow the card's due date; payment_day_override does not apply.
+      when 'INSTALLMENT' then payment_day_override is null and installments_count is not null and purchase_date is not null and payment_method is not null
         and ((payment_method = 'CREDIT_CARD' and card_id is not null) or (payment_method <> 'CREDIT_CARD' and first_payment_date is not null))
-      when 'OCCASIONAL' then purchase_date is not null and payment_method is not null
+      when 'OCCASIONAL' then payment_day_override is null and purchase_date is not null and payment_method is not null
         and (payment_method <> 'CREDIT_CARD' or card_id is not null)
     end
   )

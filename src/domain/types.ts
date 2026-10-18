@@ -42,8 +42,11 @@ export interface CreditCard {
 interface RecurringFields {
   amount: number
   recurrence: Recurrence
-  /** Day of month the charge is expected. */
-  chargeDay: number
+  /**
+   * Day of month this expense is paid when it differs from the user's
+   * `defaultPaymentDay` (e.g. a car payment on day 17). `null` = use the default.
+   */
+  paymentDayOverride: number | null
   /** Month (1–12) of the charge; only for ANNUAL recurrence. */
   chargeMonth: number | null
   startDate: ISODate
@@ -90,8 +93,16 @@ export type Expense = FixedExpense | SubscriptionExpense | InstallmentExpense | 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never
 export type NewExpense = DistributiveOmit<Expense, 'id'>
 
+/** Used when the user has not configured a default payment day. */
+export const DEFAULT_PAYMENT_DAY = 5
+
 export interface FinancialData {
   fixedSalary: number | null
+  /**
+   * Day of month the user normally pays regular expenses (fixed expenses, subscriptions).
+   * Never applies to credit card statements, which use the card's own due day.
+   */
+  defaultPaymentDay: number
   salaryHistory: SalaryEntry[]
   incomeSources: IncomeSource[]
   cards: CreditCard[]
@@ -100,6 +111,7 @@ export interface FinancialData {
 
 export const EMPTY_DATA: FinancialData = {
   fixedSalary: null,
+  defaultPaymentDay: DEFAULT_PAYMENT_DAY,
   salaryHistory: [],
   incomeSources: [],
   cards: [],

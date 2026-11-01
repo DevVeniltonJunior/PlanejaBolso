@@ -13,8 +13,7 @@ create table if not exists public.profiles (
   -- financial cycles (day 5: the October cycle runs 05/10 → 04/11). It never changes a card
   -- statement's due date; it only decides which cycle pays that statement.
   default_payment_day smallint not null default 5 check (default_payment_day between 1 and 31),
-  -- Active financial cycle (first day of its month). Only one per user; advanced by
-  -- close_financial_cycle(). Null = the current calendar month.
+  -- Active financial cycle (first day of its month); null = the calendar month.
   active_cycle date check (active_cycle is null or extract(day from active_cycle) = 1),
   updated_at timestamptz not null default now()
 );
@@ -95,8 +94,7 @@ create table if not exists public.expenses (
   )
 );
 
--- Closed financial cycles. Written only by close_financial_cycle(); read-only for users, so a
--- closed cycle is never reopened.
+-- Written only by close_financial_cycle(); read-only for users.
 create table if not exists public.closed_cycles (
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   cycle_month date not null check (extract(day from cycle_month) = 1),
@@ -153,11 +151,8 @@ create policy "own rows" on public.closed_cycles for select to authenticated
 
 -- ------------------------------------------------------------------ functions
 
--- Closes p_cycle and makes the next cycle active, atomically. Returns the active cycle.
--- p_cycle is the cycle the app shows as active: the persisted one, or a later calendar month
--- (cycles skipped by the calendar are not marked as closed).
--- Closing a cycle that is no longer active (repeated click, second tab, stale session) changes
--- nothing, so the active cycle advances at most once per cycle.
+-- Closes p_cycle and makes the next cycle active. Returns the active cycle.
+-- Closing a cycle older than the active one (repeated click, another tab) does nothing.
 create or replace function public.close_financial_cycle(p_cycle date)
 returns date
 language plpgsql

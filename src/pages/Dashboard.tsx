@@ -37,7 +37,6 @@ export function DashboardPage() {
   const [showDetails, setShowDetails] = useState(false)
   const [confirmingClose, setConfirmingClose] = useState(false)
 
-  // Viewing another cycle only changes the URL, never the persisted active cycle.
   const activeKey = monthKey(activeCycle(data, todayISO()))
   const viewedParam = params.get(CYCLE_PARAM)
   const selectedKey = viewedParam && /^\d{4}-(0[1-9]|1[0-2])$/.test(viewedParam) ? viewedParam : activeKey
@@ -220,10 +219,7 @@ function CloseCycleDialog({ cycle, onClose, onClosed }: { cycle: FinancialCycle;
           Encerrar o <strong>{formatCycleLong(cycle).toLowerCase()}</strong>? O{' '}
           <strong>{formatCycleLong(nextCycle(cycle)).toLowerCase()}</strong> passa a ser o ciclo atual.
         </p>
-        <p className="info">
-          Nenhuma despesa, renda ou parcela é alterada ou excluída. O {formatCycleLong(cycle).toLowerCase()} continua disponível
-          para consulta no painel.
-        </p>
+        <p className="info">Seus registros não são alterados e o ciclo continua disponível para consulta.</p>
         <ErrorMessage error={action.error} />
         <div className="actions">
           <button className="button primary" onClick={confirm} disabled={action.busy}>

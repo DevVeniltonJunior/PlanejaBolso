@@ -34,17 +34,15 @@ import type { CreditCard, ISODate } from './types'
 /** A cycle is identified by the month whose income funds it. */
 export type FinancialCycle = YearMonth
 
-/** Cycle that becomes active when `cycle` is closed (December → January of the next year). */
+/** Cycle that becomes active when `cycle` is closed. */
 export function nextCycle(cycle: FinancialCycle): FinancialCycle {
   return addMonths(cycle, 1)
 }
 
 /**
- * Active cycle: the one the user is managing now. It does not depend on where today falls
- * within cycle periods (on 01/11 with payment day 5 the October period is still running, but
- * November is active). It is the persisted cycle — advanced only by closing cycles, possibly
- * ahead of the calendar — or the calendar month once the calendar has moved past it.
- * It never moves backward, and cycles skipped by the calendar are not marked as closed.
+ * Cycle the user is managing now: the persisted one (advanced by closing cycles), or the
+ * calendar month once the calendar passes it. Independent of today's position within cycle
+ * periods: on 01/11 with payment day 5, November is active.
  */
 export function resolveActiveCycle(persisted: FinancialCycle | null, calendarMonth: YearMonth): FinancialCycle {
   return persisted && monthIndex(persisted) > monthIndex(calendarMonth) ? persisted : calendarMonth

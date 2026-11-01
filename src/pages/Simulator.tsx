@@ -29,7 +29,6 @@ export function SimulatorPage() {
   const [cardId, setCardId] = useState(data.cards[0]?.id ?? '')
   const [split, setSplit] = useState(false)
   const [installments, setInstallments] = useState('3')
-  // Pix/Cash installments: first installment's month and monthly due day.
   const [startDate, setStartDate] = useState(todayISO())
   const [dueDay, setDueDay] = useState(String(parseISODate(todayISO()).day))
   const [added, setAdded] = useState(false)
@@ -144,7 +143,7 @@ export function SimulatorPage() {
           {pixFirst && count > 1 && (
             <p className="info">
               1ª parcela em {formatDate(pixFirst.date)}, no {formatCycleLong(pixFirst.cycle).toLowerCase()}; as demais seguem mês a
-              mês. Sem cartão, sem regras de fatura.
+              mês.
             </p>
           )}
           {placement && (

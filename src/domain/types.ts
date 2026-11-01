@@ -76,12 +76,9 @@ export interface InstallmentExpense {
   purchaseDate: ISODate
   paymentMethod: PaymentMethod
   cardId: string | null
-  /** Pix/Cash: date of the first installment (its month is the first installment's cycle). Card: `null`. */
+  /** Pix/Cash only: date of the first installment. */
   firstPaymentDate: ISODate | null
-  /**
-   * Pix/Cash: monthly due day (29–31 are clamped in shorter months).
-   * `null` = the day of `firstPaymentDate` (records created before this field existed). Card: `null`.
-   */
+  /** Pix/Cash only: monthly due day; `null` = the day of `firstPaymentDate` (older records). */
   dueDay: number | null
 }
 
@@ -119,9 +116,8 @@ export interface FinancialData {
   incomeSources: IncomeSource[]
   cards: CreditCard[]
   expenses: Expense[]
-  /** Active financial cycle as persisted (advanced by closing cycles); `null` until the first closing. */
+  /** Persisted active cycle; `null` until the first closing. */
   activeCycle: YearMonth | null
-  /** Cycles the user has closed, oldest first. */
   closedCycles: ClosedCycle[]
 }
 

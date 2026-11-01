@@ -101,7 +101,7 @@ export function projectionContext(data: Pick<FinancialData, 'cards' | 'defaultPa
   return { cards: new Map(data.cards.map((c) => [c.id, c])), defaultPaymentDay: data.defaultPaymentDay }
 }
 
-/** Active cycle on `today` (see `resolveActiveCycle`) — the cycle the dashboard and simulator start from. */
+/** Cycle the dashboard and simulator start from. */
 export function activeCycle(data: Pick<FinancialData, 'activeCycle'>, today: ISODate): FinancialCycle {
   return resolveActiveCycle(data.activeCycle, monthOf(today))
 }
@@ -175,7 +175,7 @@ export function placeOccasional(
   return { cycle: cycleOfDate(e.purchaseDate, ctx.defaultPaymentDay), date: e.purchaseDate }
 }
 
-/** First Pix/Cash installment: the due day in the start date's month (clamped to the month length). */
+/** First Pix/Cash installment: the due day in the start date's month. */
 export function firstInstallmentDate(startDate: ISODate, dueDay: number): ISODate {
   return toISODate(dateInMonth(monthOf(startDate), dueDay))
 }
@@ -192,7 +192,7 @@ export function placeInstallment(
     const statementMonth = addMonths(first.statementMonth, k)
     return { cycle: addMonths(first.cycle, k), date: toISODate(statementDueDate(card, statementMonth)), statementMonth, card }
   }
-  // Pix/Cash: the nominal due day is kept, so day 31 becomes 28/29 in February and 31 again in March.
+  // The nominal due day is kept: day 31 becomes 28 in February and 31 again in March.
   const first = parseISODate(e.firstPaymentDate ?? e.purchaseDate)
   const month = addMonths(monthOf(first), k)
   return { cycle: month, date: toISODate(dateInMonth(month, e.dueDay ?? first.day)) }

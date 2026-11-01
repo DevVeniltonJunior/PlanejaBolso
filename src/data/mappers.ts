@@ -76,7 +76,6 @@ export function expenseFromRow(r: Row): Expense {
         paymentMethod: r.payment_method,
         cardId: r.card_id,
         firstPaymentDate: r.first_payment_date,
-        // The column holds the day of month the expense is paid; for Pix/Cash installments, their due day.
         dueDay: num(r.payment_day_override),
       }
     default:

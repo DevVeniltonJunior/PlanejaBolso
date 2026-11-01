@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { FinancialCycle } from '../domain/cycle'
-import { currentMonth, monthOf } from '../domain/dates'
+import { monthOf } from '../domain/dates'
 import { DEFAULT_PAYMENT_DAY, type CreditCard, type FinancialData, type IncomeSource, type NewExpense, type SalaryEntry } from '../domain/types'
 import {
   cardFromRow,
@@ -29,7 +29,6 @@ interface DataState {
   saveIncomeSource(source: Omit<IncomeSource, 'id'>, id?: string): Promise<void>
   saveCard(card: Omit<CreditCard, 'id'>, id?: string): Promise<void>
   saveExpense(expense: NewExpense, id?: string): Promise<void>
-  /** Closes `cycle` and makes the next one active. Repeated or concurrent calls advance at most once. */
   closeCycle(cycle: FinancialCycle): Promise<void>
   remove(table: Table, id: string): Promise<void>
 }
@@ -66,12 +65,6 @@ export function DataProvider({ userId, children }: { userId: string; children: R
         check(sb.from('closed_cycles').select('cycle_month, closed_at').order('cycle_month')),
       ])
       const profileRow = profile.data as Row | null
-      const calendarCycle = cycleToColumn(currentMonth())
-      if (profileRow?.active_cycle && profileRow.active_cycle < calendarCycle) {
-        // The calendar moved past the active cycle: follow it (skipped cycles stay open).
-        // The filter makes the update monotonic, so a session with an older date cannot move it back.
-        await check(sb.from('profiles').update({ active_cycle: calendarCycle }).eq('user_id', userId).lt('active_cycle', calendarCycle))
-      }
       const fixed = profileRow?.fixed_salary
       setData({
         fixedSalary: fixed === null || fixed === undefined ? null : Number(fixed),
@@ -87,7 +80,7 @@ export function DataProvider({ userId, children }: { userId: string; children: R
     } catch (e) {
       setError((e as Error).message)
     }
-  }, [userId])
+  }, [])
 
   useEffect(() => {
     setData(null)
@@ -121,7 +114,6 @@ export function DataProvider({ userId, children }: { userId: string; children: R
     saveCard: (card, id) => save('credit_cards', cardToRow(card), id),
     saveExpense: (expense, id) => save('expenses', expenseToRow(expense), id),
     async closeCycle(cycle) {
-      // Atomic on the server (see supabase/migrations/002_financial_cycles.sql).
       await check(requireSupabase().rpc('close_financial_cycle', { p_cycle: cycleToColumn(cycle) }))
       await reload()
     },

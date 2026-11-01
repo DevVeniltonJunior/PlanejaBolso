@@ -1,7 +1,5 @@
--- Pix/Cash installments keep their monthly due day in payment_day_override (the column that
--- already holds the day of month an expense is paid), so a due day of 29–31 survives short months.
--- Safe to run more than once. Existing rows are unchanged: their due day stays null, which
--- means "the day of first_payment_date", exactly as before. Card installments still require null.
+-- Pix/Cash installments store their monthly due day in payment_day_override.
+-- Safe to run more than once; existing rows keep null (= the day of first_payment_date).
 
 alter table public.expenses drop constraint if exists expenses_type_fields_check;
 alter table public.expenses add constraint expenses_type_fields_check check (

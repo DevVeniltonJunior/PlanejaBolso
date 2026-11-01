@@ -32,7 +32,6 @@ interface FormState {
   purchaseDate: string
   paymentMethod: PaymentMethod
   cardId: string
-  /** Pix/Cash installments: start date (its month holds the first installment) and monthly due day. */
   firstPaymentDate: string
   dueDay: string
 }
@@ -117,7 +116,6 @@ function build(s: FormState, cards: CreditCard[]): NewExpense | string {
         if (!s.purchaseDate) return 'Informe a data da compra.'
         return { ...installment, purchaseDate: s.purchaseDate, cardId: s.cardId, firstPaymentDate: null, dueDay: null }
       }
-      // Pix/Cash: no card billing. The purchase date is not asked; it records the first installment.
       if (!s.firstPaymentDate) return 'Informe a data de início.'
       const dueDay = Number(s.dueDay)
       const firstPaymentDate = firstInstallmentDate(s.firstPaymentDate, dueDay)
@@ -136,7 +134,7 @@ function build(s: FormState, cards: CreditCard[]): NewExpense | string {
   }
 }
 
-/** First and last Pix/Cash installments, placed by the projection engine. */
+/** First and last Pix/Cash installments. */
 function installmentSchedule(s: FormState, count: number, ctx: ProjectionContext) {
   const dueDay = Number(s.dueDay)
   const firstPaymentDate = firstInstallmentDate(s.firstPaymentDate, dueDay)
@@ -314,8 +312,7 @@ export function ExpenseForm({
               {schedule && (
                 <p className="field-hint">
                   1ª parcela em {formatDate(schedule.first.date)} (ciclo de {formatMonthShort(schedule.first.cycle)}), última em{' '}
-                  {formatDate(schedule.last.date)} (ciclo de {formatMonthShort(schedule.last.cycle)}). Uma parcela por mês a partir do
-                  mês de início; vencimentos nos dias 29–31 passam para o último dia dos meses mais curtos.
+                  {formatDate(schedule.last.date)} (ciclo de {formatMonthShort(schedule.last.cycle)}).
                 </p>
               )}
             </>

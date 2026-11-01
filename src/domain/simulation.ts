@@ -17,9 +17,8 @@ export interface PurchaseSimulationInput {
   /** 1 = single payment. */
   installments: number
   purchaseDate: ISODate
-  /** Pix/Cash installments: any date in the month of the first installment (default: purchase date). */
+  /** Pix/Cash installments: month of the first installment (default: purchase date) and due day (default: its day). */
   startDate?: ISODate
-  /** Pix/Cash installments: monthly due day (default: day of the start date). */
   dueDay?: number
 }
 
@@ -56,7 +55,6 @@ export function simulationToExpense(input: PurchaseSimulationInput): NewExpense 
       paymentMethod: input.paymentMethod,
     }
     if (isCard) return { ...installment, purchaseDate: input.purchaseDate, cardId, firstPaymentDate: null, dueDay: null }
-    // Same fields the expense form produces for Pix/Cash installments.
     const start = input.startDate ?? input.purchaseDate
     const dueDay = input.dueDay ?? parseISODate(start).day
     const firstPaymentDate = firstInstallmentDate(start, dueDay)
@@ -73,8 +71,8 @@ export function simulationToExpense(input: PurchaseSimulationInput): NewExpense 
 }
 
 /**
- * Before/after comparison by financial cycle from `start` (or from the purchase's first cycle,
- * if earlier), covering at least `minCycles` and every cycle the purchase affects (all installments).
+ * Before/after comparison by financial cycle from `start` (or the purchase's first cycle, if earlier),
+ * covering at least `minCycles` and every cycle the purchase affects.
  */
 export function simulatePurchase(
   data: FinancialData,

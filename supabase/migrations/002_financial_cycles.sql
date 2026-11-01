@@ -1,14 +1,10 @@
--- Active financial cycle per user and the history of closed cycles.
--- Safe to run more than once. Existing data is not changed: users start with no persisted
--- active cycle, which the app reads as the current calendar month.
+-- Active financial cycle per user and the history of closed cycles. Safe to run more than once.
 
--- One active cycle per user: a single column on the user's profile (first day of the cycle's month).
 alter table public.profiles
   add column if not exists active_cycle date
   check (active_cycle is null or extract(day from active_cycle) = 1);
 
--- Closed cycles. Rows are only written by close_financial_cycle(); users can read their own
--- history but cannot insert, change or delete it, so a closed cycle is never reopened.
+-- Written only by close_financial_cycle(); read-only for users.
 create table if not exists public.closed_cycles (
   user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
   cycle_month date not null check (extract(day from cycle_month) = 1),
@@ -24,11 +20,8 @@ drop policy if exists "own rows" on public.closed_cycles;
 create policy "own rows" on public.closed_cycles for select to authenticated
   using (user_id = (select auth.uid()));
 
--- Closes p_cycle and makes the next cycle active, atomically. Returns the active cycle.
--- p_cycle is the cycle the app shows as active: the persisted one, or a later calendar month
--- (cycles skipped by the calendar are not marked as closed).
--- Closing a cycle that is no longer active (repeated click, second tab, stale session) changes
--- nothing, so the active cycle advances at most once per cycle.
+-- Closes p_cycle and makes the next cycle active. Returns the active cycle.
+-- Closing a cycle older than the active one (repeated click, another tab) does nothing.
 create or replace function public.close_financial_cycle(p_cycle date)
 returns date
 language plpgsql

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { EmptyState, ErrorMessage, Field, Modal, Money, confirmDelete, useAction } from '../components/ui'
 import { useData, useFinancialData } from '../data/DataContext'
 import { addMonths, currentMonth, monthKey, monthOf, parseISODate, todayISO } from '../domain/dates'
-import { currentCycle } from '../domain/projection'
+import { activeCycle } from '../domain/projection'
 import {
   INCOME_RECURRENCE_LABEL,
   INCOME_TYPE_LABEL,
@@ -61,7 +61,7 @@ function FixedSalaryCard() {
   const [value, setValue] = useState(moneyInputValue(data.fixedSalary))
   const [saved, setSaved] = useState(false)
   const action = useAction()
-  const projected = salaryForMonth(data, addMonths(currentCycle(data, todayISO()), 1))
+  const projected = salaryForMonth(data, addMonths(activeCycle(data, todayISO()), 1))
 
   async function submit(e: FormEvent) {
     e.preventDefault()

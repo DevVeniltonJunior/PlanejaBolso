@@ -4,9 +4,11 @@ import {
   cycleOfDate,
   cycleSettlementDate,
   cycleStart,
+  nextCycle,
   obligationCycle,
   obligationMonth,
   placeCardPurchase,
+  resolveActiveCycle,
 } from './cycle'
 import { addDays, addMonths, compareDates, dateInMonth, monthsBetween, toISODate, type YearMonth } from './dates'
 import type { CreditCard } from './types'
@@ -14,6 +16,28 @@ import type { CreditCard } from './types'
 const ym = (year: number, month: number): YearMonth => ({ year, month })
 const card = (dueDay: number, closingDaysBefore: number): CreditCard => ({ id: 'c', nickname: 'C', dueDay, closingDaysBefore })
 const iso = toISODate
+
+describe('active cycle', () => {
+  it('defaults to the calendar month', () => {
+    expect(resolveActiveCycle(null, ym(2026, 11))).toEqual(ym(2026, 11))
+  })
+  it('closing advances to the next cycle, across the year boundary', () => {
+    expect(nextCycle(ym(2026, 11))).toEqual(ym(2026, 12))
+    expect(nextCycle(ym(2026, 12))).toEqual(ym(2027, 1))
+  })
+  it('closing before the month ends: the persisted cycle wins over the calendar', () => {
+    // November closed on 01/11 → December is active for the rest of November.
+    expect(resolveActiveCycle(nextCycle(ym(2026, 11)), ym(2026, 11))).toEqual(ym(2026, 12))
+  })
+  it('never moves backward', () => {
+    expect(resolveActiveCycle(ym(2027, 1), ym(2026, 11))).toEqual(ym(2027, 1))
+    expect(resolveActiveCycle(ym(2027, 1), ym(2027, 1))).toEqual(ym(2027, 1))
+  })
+  it('follows the calendar once it passes a cycle advanced manually', () => {
+    expect(resolveActiveCycle(ym(2026, 12), ym(2026, 12))).toEqual(ym(2026, 12))
+    expect(resolveActiveCycle(ym(2026, 12), ym(2027, 2))).toEqual(ym(2027, 2))
+  })
+})
 
 describe('cycle period', () => {
   it('runs from the payment day to the day before the next one (day 5: 05/10 → 04/11)', () => {

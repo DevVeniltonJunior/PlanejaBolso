@@ -1,3 +1,5 @@
+import type { YearMonth } from './dates'
+
 /** ISO calendar date, `YYYY-MM-DD`. Kept as a string to avoid timezone drift. */
 export type ISODate = string
 
@@ -74,8 +76,10 @@ export interface InstallmentExpense {
   purchaseDate: ISODate
   paymentMethod: PaymentMethod
   cardId: string | null
-  /** Required when the payment method is not a credit card. */
+  /** Pix/Cash only: date of the first installment. */
   firstPaymentDate: ISODate | null
+  /** Pix/Cash only: monthly due day; `null` = the day of `firstPaymentDate` (older records). */
+  dueDay: number | null
 }
 
 export interface OccasionalExpense {
@@ -96,6 +100,11 @@ export type NewExpense = DistributiveOmit<Expense, 'id'>
 /** Used when the user has not configured a default payment day. */
 export const DEFAULT_PAYMENT_DAY = 5
 
+export interface ClosedCycle {
+  cycle: YearMonth
+  closedAt: string
+}
+
 export interface FinancialData {
   fixedSalary: number | null
   /**
@@ -107,6 +116,9 @@ export interface FinancialData {
   incomeSources: IncomeSource[]
   cards: CreditCard[]
   expenses: Expense[]
+  /** Persisted active cycle; `null` until the first closing. */
+  activeCycle: YearMonth | null
+  closedCycles: ClosedCycle[]
 }
 
 export const EMPTY_DATA: FinancialData = {
@@ -116,4 +128,6 @@ export const EMPTY_DATA: FinancialData = {
   incomeSources: [],
   cards: [],
   expenses: [],
+  activeCycle: null,
+  closedCycles: [],
 }

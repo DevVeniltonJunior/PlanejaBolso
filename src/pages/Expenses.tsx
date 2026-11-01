@@ -17,7 +17,7 @@ import {
   formatPeriod,
 } from '../domain/format'
 import {
-  currentCycle,
+  activeCycle,
   effectivePaymentDay,
   installmentTotal,
   placeInstallment,
@@ -126,7 +126,7 @@ function describe(e: Expense, data: FinancialData): string {
     case 'INSTALLMENT': {
       const first = placeInstallment(e, 0, ctx)
       const last = placeInstallment(e, e.installmentsCount - 1, ctx)
-      const k = monthsBetween(first.cycle, currentCycle(data, todayISO()))
+      const k = monthsBetween(first.cycle, activeCycle(data, todayISO()))
       const status =
         k < 0
           ? `1ª parcela em ${formatDate(first.date)} (ciclo de ${formatMonthShort(first.cycle)})`
@@ -151,7 +151,7 @@ function DefaultPaymentDayCard() {
   const [day, setDay] = useState(String(data.defaultPaymentDay))
   const action = useAction()
   const preview = Number(day)
-  const cycle = currentCycle({ defaultPaymentDay: preview }, todayISO())
+  const cycle = activeCycle(data, todayISO())
 
   async function submit(e: FormEvent) {
     e.preventDefault()

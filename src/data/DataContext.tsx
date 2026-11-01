@@ -1,8 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import type { FinancialCycle } from '../domain/cycle'
+import { monthOf } from '../domain/dates'
 import { DEFAULT_PAYMENT_DAY, type CreditCard, type FinancialData, type IncomeSource, type NewExpense, type SalaryEntry } from '../domain/types'
 import {
   cardFromRow,
   cardToRow,
+  closedCycleFromRow,
+  cycleToColumn,
   expenseFromRow,
   expenseToRow,
   incomeFromRow,
@@ -25,6 +29,7 @@ interface DataState {
   saveIncomeSource(source: Omit<IncomeSource, 'id'>, id?: string): Promise<void>
   saveCard(card: Omit<CreditCard, 'id'>, id?: string): Promise<void>
   saveExpense(expense: NewExpense, id?: string): Promise<void>
+  closeCycle(cycle: FinancialCycle): Promise<void>
   remove(table: Table, id: string): Promise<void>
 }
 
@@ -51,12 +56,13 @@ export function DataProvider({ userId, children }: { userId: string; children: R
   const reload = useCallback(async () => {
     const sb = requireSupabase()
     try {
-      const [profile, salary, income, cards, expenses] = await Promise.all([
-        check(sb.from('profiles').select('fixed_salary, default_payment_day').maybeSingle()),
+      const [profile, salary, income, cards, expenses, closedCycles] = await Promise.all([
+        check(sb.from('profiles').select('fixed_salary, default_payment_day, active_cycle').maybeSingle()),
         check(sb.from('salary_history').select('*').order('reference_month', { ascending: false })),
         check(sb.from('income_sources').select('*').order('name')),
         check(sb.from('credit_cards').select('*').order('nickname')),
         check(sb.from('expenses').select('*').order('created_at', { ascending: false })),
+        check(sb.from('closed_cycles').select('cycle_month, closed_at').order('cycle_month')),
       ])
       const profileRow = profile.data as Row | null
       const fixed = profileRow?.fixed_salary
@@ -67,6 +73,8 @@ export function DataProvider({ userId, children }: { userId: string; children: R
         incomeSources: (income.data ?? []).map(incomeFromRow),
         cards: (cards.data ?? []).map(cardFromRow),
         expenses: (expenses.data ?? []).map(expenseFromRow),
+        activeCycle: profileRow?.active_cycle ? monthOf(profileRow.active_cycle) : null,
+        closedCycles: (closedCycles.data ?? []).map(closedCycleFromRow),
       })
       setError(null)
     } catch (e) {
@@ -105,6 +113,10 @@ export function DataProvider({ userId, children }: { userId: string; children: R
     saveIncomeSource: (source, id) => save('income_sources', incomeToRow(source), id),
     saveCard: (card, id) => save('credit_cards', cardToRow(card), id),
     saveExpense: (expense, id) => save('expenses', expenseToRow(expense), id),
+    async closeCycle(cycle) {
+      await check(requireSupabase().rpc('close_financial_cycle', { p_cycle: cycleToColumn(cycle) }))
+      await reload()
+    },
     async remove(table, id) {
       await check(requireSupabase().from(table).delete().eq('id', id))
       await reload()

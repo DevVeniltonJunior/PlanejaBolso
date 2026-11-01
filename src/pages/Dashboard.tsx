@@ -1,20 +1,22 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { CommitmentMeter } from '../components/CommitmentMeter'
-import { Money } from '../components/ui'
-import { useFinancialData } from '../data/DataContext'
-import { parseISODate, todayISO } from '../domain/dates'
+import { ErrorMessage, Modal, Money, useAction } from '../components/ui'
+import { useData, useFinancialData } from '../data/DataContext'
+import { nextCycle, type FinancialCycle } from '../domain/cycle'
+import { addMonths, monthKey, parseISODate, parseMonthKey, todayISO } from '../domain/dates'
 import {
   EXPENSE_TYPE_LABEL,
   EXPENSE_TYPE_PLURAL,
   formatBRL,
   formatCycleLong,
+  formatDate,
   formatDayMonth,
   formatMonthShort,
   formatPercent,
   formatPeriod,
 } from '../domain/format'
-import { currentCycle, projectCycles, type CycleProjection } from '../domain/projection'
+import { activeCycle, projectCycles, type CycleProjection } from '../domain/projection'
 import type { SalarySource } from '../domain/salary'
 
 const SALARY_SOURCE_LABEL: Record<SalarySource, string> = {
@@ -25,20 +27,55 @@ const SALARY_SOURCE_LABEL: Record<SalarySource, string> = {
 }
 
 const HORIZONS = [3, 6, 12]
+/** URL parameter with the cycle being viewed (`YYYY-MM`); absent = the active cycle. */
+const CYCLE_PARAM = 'ciclo'
 
 export function DashboardPage() {
   const data = useFinancialData()
+  const [params, setParams] = useSearchParams()
   const [horizon, setHorizon] = useState(3)
   const [showDetails, setShowDetails] = useState(false)
-  const cycles = useMemo(() => projectCycles(data, currentCycle(data, todayISO()), 12), [data])
+  const [confirmingClose, setConfirmingClose] = useState(false)
+
+  const activeKey = monthKey(activeCycle(data, todayISO()))
+  const viewedParam = params.get(CYCLE_PARAM)
+  const selectedKey = viewedParam && /^\d{4}-(0[1-9]|1[0-2])$/.test(viewedParam) ? viewedParam : activeKey
+  const cycles = useMemo(() => projectCycles(data, parseMonthKey(selectedKey), 12), [data, selectedKey])
   const current = cycles[0]
+  const isActive = selectedKey === activeKey
+  const closed = data.closedCycles.find((c) => monthKey(c.cycle) === selectedKey)
   const isEmpty = data.fixedSalary === null && data.salaryHistory.length === 0 && data.expenses.length === 0
+
+  const view = (cycle: FinancialCycle | null) => {
+    const key = cycle && monthKey(cycle)
+    setParams(key && key !== activeKey ? { [CYCLE_PARAM]: key } : {})
+    setShowDetails(false)
+  }
+  const prev = addMonths(current.cycle, -1)
+  const next = addMonths(current.cycle, 1)
 
   return (
     <div className="page">
       <section className="card hero">
+        <nav className="cycle-nav" aria-label="Navegar entre ciclos">
+          <button className="link-button" onClick={() => view(prev)} aria-label={`Ciclo anterior: ${formatCycleLong(prev)}`}>
+            ← {formatMonthShort(prev)}
+          </button>
+          <strong>{formatCycleLong(current.cycle)}</strong>
+          <button className="link-button" onClick={() => view(next)} aria-label={`Próximo ciclo: ${formatCycleLong(next)}`}>
+            {formatMonthShort(next)} →
+          </button>
+        </nav>
         <p className="eyebrow">
-          {formatCycleLong(current.cycle)} · {formatPeriod(current.period.start, current.period.end)}
+          {closed
+            ? `Encerrado em ${formatDate(todayISO(new Date(closed.closedAt)))}`
+            : isActive
+              ? 'Ciclo atual'
+              : selectedKey < activeKey
+                ? 'Ciclo anterior'
+                : 'Ciclo futuro'}
+          {' · '}
+          {formatPeriod(current.period.start, current.period.end)}
         </p>
 
         <div className="hero-balance">
@@ -77,8 +114,18 @@ export function DashboardPage() {
           <Link className="button primary" to="/simular">Simular compra</Link>
           <Link className="button" to="/despesas?novo=1">+ Despesa</Link>
           <Link className="button" to="/renda?novo=1">+ Renda</Link>
+          {isActive && !closed && (
+            <button className="button" onClick={() => setConfirmingClose(true)}>Encerrar ciclo</button>
+          )}
+          {!isActive && (
+            <button className="button" onClick={() => view(null)}>Voltar ao ciclo atual</button>
+          )}
         </div>
       </section>
+
+      {confirmingClose && (
+        <CloseCycleDialog cycle={current.cycle} onClose={() => setConfirmingClose(false)} onClosed={() => view(null)} />
+      )}
 
       {isEmpty && (
         <section className="card onboarding">
@@ -154,6 +201,37 @@ export function DashboardPage() {
   )
 }
 
+function CloseCycleDialog({ cycle, onClose, onClosed }: { cycle: FinancialCycle; onClose(): void; onClosed(): void }) {
+  const { closeCycle } = useData()
+  const action = useAction()
+
+  async function confirm() {
+    if (await action.run(() => closeCycle(cycle))) {
+      onClose()
+      onClosed()
+    }
+  }
+
+  return (
+    <Modal title="Encerrar ciclo" onClose={onClose}>
+      <div className="form">
+        <p>
+          Encerrar o <strong>{formatCycleLong(cycle).toLowerCase()}</strong>? O{' '}
+          <strong>{formatCycleLong(nextCycle(cycle)).toLowerCase()}</strong> passa a ser o ciclo atual.
+        </p>
+        <p className="info">Seus registros não são alterados e o ciclo continua disponível para consulta.</p>
+        <ErrorMessage error={action.error} />
+        <div className="actions">
+          <button className="button primary" onClick={confirm} disabled={action.busy}>
+            {action.busy ? 'Encerrando…' : 'Encerrar ciclo'}
+          </button>
+          <button className="button" onClick={onClose} disabled={action.busy}>Cancelar</button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 function breakdownValue(p: CycleProjection, type: 'FIXED' | 'INSTALLMENT' | 'SUBSCRIPTION' | 'OCCASIONAL') {
   return { FIXED: p.expenses.fixed, INSTALLMENT: p.expenses.installments, SUBSCRIPTION: p.expenses.subscriptions, OCCASIONAL: p.expenses.occasional }[type]
 }
@@ -177,7 +255,7 @@ function CycleDetails({ projection: p }: { projection: CycleProjection }) {
       <h3>Despesas, por data de pagamento</h3>
       <p className="footnote">Faturas de cartão aparecem na data de vencimento do cartão.</p>
       {p.expenses.items.length === 0 ? (
-        <p className="muted">Nenhuma despesa prevista neste mês.</p>
+        <p className="muted">Nenhuma despesa prevista neste ciclo.</p>
       ) : (
         <ul className="line-list">
           {p.expenses.items.map((e, idx) => (

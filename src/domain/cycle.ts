@@ -8,8 +8,8 @@
  * Two kinds of events are placed in cycles:
  * - Money spent or received on a date (Cash/Pix purchases, income): the cycle in progress
  *   on that date — `[D of month M, D of month M+1)`.
- * - Obligations due on a date (card statements, regular bills, non-card installments): the
- *   cycle responsible for paying them. An obligation due *after* D belongs to that month's
+ * - Obligations due on a date (card statements, regular bills): the cycle responsible for
+ *   paying them. An obligation due *after* D belongs to that month's
  *   cycle; one due *on or before* D is a closing payment of the previous month's cycle.
  *   With D = 5: due 17/10 → October; due 05/11 → October; due 10/11 → November.
  *
@@ -23,6 +23,7 @@ import {
   addMonths,
   dateInMonth,
   daysInMonth,
+  monthIndex,
   monthOf,
   parseISODate,
   type SimpleDate,
@@ -32,6 +33,20 @@ import type { CreditCard, ISODate } from './types'
 
 /** A cycle is identified by the month whose income funds it. */
 export type FinancialCycle = YearMonth
+
+/** Cycle that becomes active when `cycle` is closed. */
+export function nextCycle(cycle: FinancialCycle): FinancialCycle {
+  return addMonths(cycle, 1)
+}
+
+/**
+ * Cycle the user is managing now: the persisted one (advanced by closing cycles), or the
+ * calendar month once the calendar passes it. Independent of today's position within cycle
+ * periods: on 01/11 with payment day 5, November is active.
+ */
+export function resolveActiveCycle(persisted: FinancialCycle | null, calendarMonth: YearMonth): FinancialCycle {
+  return persisted && monthIndex(persisted) > monthIndex(calendarMonth) ? persisted : calendarMonth
+}
 
 /** First day of the cycle (the payment day in the cycle's month, clamped to the month length). */
 export function cycleStart(cycle: FinancialCycle, paymentDay: number): SimpleDate {

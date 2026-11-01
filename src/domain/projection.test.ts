@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
+import { cycleOfDate } from './cycle'
 import { addMonths, dateInMonth, toISODate, type YearMonth } from './dates'
 import { parseMoney } from './money'
 import {
-  currentCycle,
+  activeCycle,
+  chargeCycles,
   effectivePaymentDay,
+  firstInstallmentDate,
+  installmentTotal,
   incomeDateInCycle,
   projectCycle,
   projectCycles,
@@ -54,7 +58,7 @@ const occasional = (id: string, purchaseDate: string, cardId: string | null, amo
 
 const installment = (patch: Partial<Extract<Expense, { type: 'INSTALLMENT' }>>): Expense => ({
   id: 'i1', type: 'INSTALLMENT', name: 'Notebook', installmentAmount: 500, installmentsCount: 10,
-  purchaseDate: '2026-10-20', paymentMethod: 'CREDIT_CARD', cardId: 'c1', firstPaymentDate: null,
+  purchaseDate: '2026-10-20', paymentMethod: 'CREDIT_CARD', cardId: 'c1', firstPaymentDate: null, dueDay: null,
   ...patch,
 })
 
@@ -87,13 +91,21 @@ describe('money', () => {
   })
 })
 
-describe('current cycle', () => {
-  it('is the cycle in progress today', () => {
-    expect(currentCycle({ defaultPaymentDay: 5 }, '2026-10-18')).toEqual(ym(2026, 10))
-    expect(currentCycle({ defaultPaymentDay: 5 }, '2026-11-03')).toEqual(ym(2026, 10))
-    expect(currentCycle({ defaultPaymentDay: 5 }, '2026-11-05')).toEqual(ym(2026, 11))
-    expect(currentCycle({ defaultPaymentDay: 20 }, '2026-10-18')).toEqual(ym(2026, 9))
-    expect(currentCycle({ defaultPaymentDay: 5 }, '2027-01-02')).toEqual(ym(2026, 12))
+describe('active cycle', () => {
+  it('without a persisted cycle, is the calendar month — not the cycle period still running', () => {
+    // On 01/11 with payment day 5, the October period (05/10 → 04/11) is still running.
+    expect(cycleOfDate('2026-11-01', 5)).toEqual(ym(2026, 10))
+    expect(activeCycle({ activeCycle: null }, '2026-11-01')).toEqual(ym(2026, 11))
+    expect(activeCycle({ activeCycle: null }, '2026-11-30')).toEqual(ym(2026, 11))
+    expect(activeCycle({ activeCycle: null }, '2027-01-02')).toEqual(ym(2027, 1))
+  })
+  it('ignores expenses due in the previous cycle', () => {
+    const d = data({ fixedSalary: 5000, expenses: [fixed({ paymentDayOverride: 5 })] }) // due 05/11 → October cycle
+    expect(activeCycle(d, '2026-11-01')).toEqual(ym(2026, 11))
+  })
+  it('a cycle closed ahead of the calendar takes precedence', () => {
+    expect(activeCycle({ activeCycle: ym(2026, 12) }, '2026-11-20')).toEqual(ym(2026, 12))
+    expect(activeCycle({ activeCycle: ym(2026, 11) }, '2027-02-01')).toEqual(ym(2027, 2))
   })
   it('exposes the cycle period', () => {
     expect(projectCycle(data({}), ym(2026, 10)).period).toEqual({ start: '2026-10-05', end: '2026-11-04', settlement: '2026-11-05' })
@@ -276,12 +288,13 @@ describe('installments in cycles', () => {
     expect(run('2026-12-18')).toEqual([0, 300, 300, 300, 0]) // closing day → Jan, Feb, Mar
   })
 
-  it('non-card installments follow their first payment date, placed like any obligation', () => {
+  it('non-card installments follow their first payment date, one per calendar month', () => {
     const later = installment({ installmentsCount: 3, paymentMethod: 'PIX', cardId: null, firstPaymentDate: '2026-12-15' })
     expect(projectCycles(data({ expenses: [later] }), ym(2026, 11), 5).map((m) => m.expenses.installments)).toEqual([0, 500, 500, 500, 0])
-    // First payment on the payment day (05/11) → it closes the October cycle.
+    // First payment on the payment day (05/11): it belongs to November, the month it starts in.
     const onPaymentDay = installment({ installmentsCount: 2, paymentMethod: 'PIX', cardId: null, firstPaymentDate: '2026-11-05' })
-    expect(projectCycles(data({ expenses: [onPaymentDay] }), ym(2026, 10), 3).map(charges)).toEqual([
+    expect(projectCycles(data({ expenses: [onPaymentDay] }), ym(2026, 10), 4).map(charges)).toEqual([
+      [],
       ['Notebook@2026-11-05'],
       ['Notebook@2026-12-05'],
       [],
@@ -375,7 +388,7 @@ describe('balance and commitment', () => {
 describe('purchase simulation', () => {
   const base = () => data({ fixedSalary: 7000, cards: [card, lateCard], expenses: [fixed({ amount: 5200 })] })
   const diffs = (input: Parameters<typeof simulatePurchase>[1], d = base()) =>
-    simulatePurchase(d, input, currentCycle(d, input.purchaseDate)).rows.map((r) => r.balanceDifference)
+    simulatePurchase(d, input, cycleOfDate(input.purchaseDate, d.defaultPaymentDay)).rows.map((r) => r.balanceDifference)
 
   it('compares before/after for a Pix payment in the current cycle', () => {
     const r = simulatePurchase(base(), { amount: 500, paymentMethod: 'PIX', installments: 1, purchaseDate: '2026-10-18' }, ym(2026, 10))
@@ -408,14 +421,14 @@ describe('purchase simulation', () => {
     expect(r.rows[5].cycle).toEqual(ym(2027, 3))
   })
 
-  it('"before" matches the dashboard, including payment-day rules', () => {
+  it('"before" matches the regular projection, including payment-day rules', () => {
     const d = data({
       fixedSalary: 7000,
       defaultPaymentDay: 20,
       cards: [card],
       expenses: [fixed({ startDate: '2026-10-10' }), fixed({ id: 'car', name: 'Carro', startDate: '2026-10-10', paymentDayOverride: 3 })],
     })
-    const start = currentCycle(d, '2026-10-18') // day 20 → still the September cycle
+    const start = cycleOfDate('2026-10-18', 20) // day 20 → still the September cycle
     expect(start).toEqual(ym(2026, 9))
     const sim = simulatePurchase(d, { amount: 90, paymentMethod: 'PIX', installments: 1, purchaseDate: '2026-10-18' }, start)
     expect(sim.rows.map((r) => r.before)).toEqual(projectCycles(d, start, sim.rows.length))
@@ -436,7 +449,7 @@ describe('purchase simulation', () => {
     const input = { description: 'TV', amount: 3000, paymentMethod: 'CREDIT_CARD' as const, cardId: 'c1', installments: 6, purchaseDate: '2026-10-18' }
     expect(simulationToExpense(input)).toEqual({
       type: 'INSTALLMENT', name: 'TV', installmentAmount: 500, installmentsCount: 6,
-      purchaseDate: '2026-10-18', paymentMethod: 'CREDIT_CARD', cardId: 'c1', firstPaymentDate: null,
+      purchaseDate: '2026-10-18', paymentMethod: 'CREDIT_CARD', cardId: 'c1', firstPaymentDate: null, dueDay: null,
     })
     expect(simulationToExpense({ amount: 50, paymentMethod: 'CASH', cardId: 'c1', installments: 1, purchaseDate: '2026-10-18' })).toEqual({
       type: 'OCCASIONAL', name: 'Compra simulada', amount: 50, purchaseDate: '2026-10-18', paymentMethod: 'CASH', cardId: null,
@@ -449,7 +462,7 @@ describe('purchase simulation', () => {
         for (const cardId of ['c1', 'c3']) {
           const d = { ...base(), defaultPaymentDay }
           const input = { amount: 1200, paymentMethod: 'CREDIT_CARD' as const, cardId, installments: 4, purchaseDate }
-          const start = currentCycle(d, purchaseDate)
+          const start = cycleOfDate(purchaseDate, defaultPaymentDay)
           const sim = simulatePurchase(d, input, start)
           const persisted = { ...d, expenses: [...d.expenses, { ...simulationToExpense(input), id: 'p' }] }
           const rename = (p: CycleProjection) => ({
@@ -458,6 +471,129 @@ describe('purchase simulation', () => {
           })
           expect(projectCycles(persisted, start, sim.rows.length)).toEqual(sim.rows.map((r) => rename(r.after)))
         }
+      }
+    }
+  })
+})
+
+describe('Pix/Cash installments', () => {
+  type Installment = Extract<Expense, { type: 'INSTALLMENT' }>
+  const pix = (patch: Partial<Installment> = {}) =>
+    <Installment>installment({ name: 'Carro', installmentAmount: 850, installmentsCount: 24, paymentMethod: 'PIX', cardId: null,
+      purchaseDate: '2026-11-10', firstPaymentDate: '2026-11-10', dueDay: 10, ...patch })
+  const series = (e: Expense, start: YearMonth, count: number, d: Partial<FinancialData> = {}) =>
+    projectCycles(data({ ...d, expenses: [e] }), start, count).map((m) => m.expenses.items.map((i) => `${i.installmentLabel}@${i.date}`))
+
+  it('car financing: 24 × R$ 850 from November 2026, one per cycle, ending at 24/24', () => {
+    const p = projectCycles(data({ expenses: [pix()] }), ym(2026, 10), 27)
+    expect(p[0].expenses.installments).toBe(0)
+    expect(p.slice(1, 5).map((m) => [m.cycle, m.expenses.items[0].installmentLabel, m.expenses.installments])).toEqual([
+      [ym(2026, 11), '1/24', 850],
+      [ym(2026, 12), '2/24', 850],
+      [ym(2027, 1), '3/24', 850],
+      [ym(2027, 2), '4/24', 850],
+    ])
+    expect(p[24].cycle).toEqual(ym(2028, 10))
+    expect(p[24].expenses.items[0]).toMatchObject({ installmentLabel: '24/24', date: '2028-10-10' })
+    expect(p.slice(25).map((m) => m.expenses.installments)).toEqual([0, 0])
+    expect(installmentTotal(pix())).toBe(20400)
+    expect(chargeCycles(pix(), data({}))).toEqual({ first: ym(2026, 11), last: ym(2028, 10) })
+  })
+
+  it('Pix and Cash begin in the start month, whatever the payment day', () => {
+    for (const paymentMethod of ['PIX', 'CASH'] as const) {
+      for (const defaultPaymentDay of [1, 5, 10, 20, 31]) {
+        // Due on 05/11: a card statement or a bill would close the October cycle; this installment does not.
+        const e = pix({ paymentMethod, installmentsCount: 2, firstPaymentDate: '2026-11-05', dueDay: 5 })
+        expect(series(e, ym(2026, 10), 4, { defaultPaymentDay })).toEqual([[], ['1/2@2026-11-05'], ['2/2@2026-12-05'], []])
+      }
+    }
+  })
+
+  it('need no credit card and ignore card billing rules', () => {
+    // No cards registered; a stale card id on a Pix installment is ignored.
+    expect(series(pix({ installmentsCount: 1 }), ym(2026, 11), 1)).toEqual([['1/1@2026-11-10']])
+    expect(series(pix({ installmentsCount: 1, cardId: 'c1' }), ym(2026, 11), 1, { cards: [card] })).toEqual([['1/1@2026-11-10']])
+  })
+
+  it('a 12-installment plan crosses the year', () => {
+    const p = series(pix({ installmentsCount: 12, firstPaymentDate: '2026-08-15', dueDay: 15 }), ym(2026, 8), 13)
+    expect(p.slice(0, 12).map((x) => x[0])).toEqual(
+      ['2026-08', '2026-09', '2026-10', '2026-11', '2026-12', '2027-01', '2027-02', '2027-03', '2027-04', '2027-05', '2027-06', '2027-07']
+        .map((m, i) => `${i + 1}/12@${m}-15`),
+    )
+    expect(p[12]).toEqual([])
+  })
+
+  it('due day 31 falls on the last day of shorter months without changing month', () => {
+    const e = pix({ installmentsCount: 5, firstPaymentDate: '2027-01-31', dueDay: 31 })
+    expect(series(e, ym(2027, 1), 5)).toEqual([['1/5@2027-01-31'], ['2/5@2027-02-28'], ['3/5@2027-03-31'], ['4/5@2027-04-30'], ['5/5@2027-05-31']])
+    // Starting in February keeps the 31st afterwards; leap year.
+    const feb = pix({ installmentsCount: 2, firstPaymentDate: firstInstallmentDate('2028-02-01', 31), dueDay: 31 })
+    expect(series(feb, ym(2028, 2), 2)).toEqual([['1/2@2028-02-29'], ['2/2@2028-03-31']])
+  })
+
+  it('the first installment is the due day within the start month', () => {
+    expect(firstInstallmentDate('2026-11-10', 10)).toBe('2026-11-10')
+    expect(firstInstallmentDate('2026-11-20', 10)).toBe('2026-11-10')
+    expect(firstInstallmentDate('2026-11-01', 31)).toBe('2026-11-30')
+    expect(firstInstallmentDate('2026-12-15', 5)).toBe('2026-12-05')
+  })
+
+  it('records saved before the due day existed use the day of the first payment date', () => {
+    const legacy = pix({ installmentsCount: 3, firstPaymentDate: '2026-12-15', dueDay: null })
+    expect(series(legacy, ym(2026, 12), 4)).toEqual([['1/3@2026-12-15'], ['2/3@2027-01-15'], ['3/3@2027-02-15'], []])
+  })
+
+  it('are not recurring: they stop after the last installment', () => {
+    const p = projectCycles(data({ expenses: [pix({ installmentsCount: 3 })] }), ym(2026, 11), 12)
+    expect(p.map((m) => m.expenses.installments)).toEqual([850, 850, 850, ...Array(9).fill(0)])
+    expect(p.every((m) => m.expenses.fixed === 0 && m.expenses.subscriptions === 0)).toBe(true)
+  })
+})
+
+describe('Pix/Cash installment simulation', () => {
+  const base = () => data({ fixedSalary: 7000, cards: [card], expenses: [fixed({ amount: 5200 })] })
+  const input = { amount: 3600, paymentMethod: 'PIX' as const, installments: 12, purchaseDate: '2026-11-01', startDate: '2026-11-10', dueDay: 10 }
+
+  it('R$ 3,600 in 12 Pix installments: R$ 300 per cycle from the start month, no card', () => {
+    const r = simulatePurchase(base(), input, ym(2026, 11))
+    expect(r.expense).toEqual({
+      type: 'INSTALLMENT', name: 'Compra simulada', installmentAmount: 300, installmentsCount: 12, paymentMethod: 'PIX',
+      purchaseDate: '2026-11-10', cardId: null, firstPaymentDate: '2026-11-10', dueDay: 10,
+    })
+    expect(r.rows.map((x) => x.balanceDifference)).toEqual(Array(12).fill(-300))
+    expect(r.rows[0].cycle).toEqual(ym(2026, 11))
+    expect(r.rows[11].cycle).toEqual(ym(2027, 10))
+    expect(r.rows[0].after.balance).toBe(1500)
+  })
+
+  it('Cash works the same and defaults the due day to the start date', () => {
+    const r = simulatePurchase(base(), { ...input, paymentMethod: 'CASH', dueDay: undefined, startDate: '2027-01-31' }, ym(2026, 11))
+    expect(r.expense).toMatchObject({ paymentMethod: 'CASH', firstPaymentDate: '2027-01-31', dueDay: 31 })
+    expect(r.rows.map((x) => x.balanceDifference)).toEqual([0, 0, ...Array(12).fill(-300)])
+  })
+
+  it('card installments in the simulator are unchanged', () => {
+    const r = simulatePurchase(base(), { ...input, paymentMethod: 'CREDIT_CARD', cardId: 'c1', purchaseDate: '2026-10-20' }, ym(2026, 10))
+    expect(r.expense).toMatchObject({ purchaseDate: '2026-10-20', firstPaymentDate: null, dueDay: null })
+    expect(r.rows.map((x) => x.balanceDifference)).toEqual(Array(12).fill(-300)) // statements Nov/2026 … → cycles Oct/2026 …
+  })
+
+  it('starts at an earlier cycle when the purchase lands before the given start', () => {
+    // A Pix purchase on 01/11 is in the October period (payment day 5), while November is active.
+    const r = simulatePurchase(base(), { amount: 100, paymentMethod: 'PIX', installments: 1, purchaseDate: '2026-11-01' }, ym(2026, 11))
+    expect(r.rows.map((x) => [x.cycle, x.balanceDifference])).toEqual([[ym(2026, 10), -100], [ym(2026, 11), 0], [ym(2026, 12), 0]])
+  })
+
+  it('once added, the dashboard projection equals the simulated "after"', () => {
+    for (const paymentMethod of ['PIX', 'CASH'] as const) {
+      for (const dueDay of [1, 5, 10, 31]) {
+        const d = base()
+        const i = { ...input, paymentMethod, dueDay }
+        const sim = simulatePurchase(d, i, ym(2026, 11))
+        const persisted = { ...d, expenses: [...d.expenses, { ...simulationToExpense(i), id: SIMULATION_EXPENSE_ID }] }
+        expect(projectCycles(persisted, sim.rows[0].cycle, sim.rows.length)).toEqual(sim.rows.map((r) => r.after))
       }
     }
   })

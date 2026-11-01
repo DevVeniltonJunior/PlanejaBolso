@@ -12,7 +12,7 @@ Prototype of a personal financial **planning and projection** app: how much inco
 src/domain/        Pure projection engine (no React, no Supabase) + tests
   dates.ts         Timezone-safe calendar helpers
   billing.ts       Credit card statements (billing date): closing and due dates
-  cycle.ts         Financial cycles and placement of dates/statements into cycles
+  cycle.ts         Financial cycles, active cycle, placement of dates/statements into cycles
   salary.ts        Net salary average and salary used per month
   projection.ts    Per-cycle projection — single source of truth
   simulation.ts    Purchase simulator (adds a temporary expense, reuses the engine)
@@ -32,15 +32,25 @@ The dashboard, projections and simulator work in **financial cycles**, not calen
 The user's `defaultPaymentDay` (*D*, default 5, set on the Expenses page) is the boundary between cycles. A cycle is named after the month whose income funds it:
 
 - With *D* = 5, the **October cycle** runs from **05/10 to 04/11**, and the bills due on **05/11** are its closing payments.
-- The current cycle is the one in progress today. With *D* = 5, on 03/11 you are still in the October cycle.
 - *D* is clamped to the month length (31 → 28/29 in February).
+
+### Active cycle and closing
+
+The dashboard opens on the **active cycle**: the cycle the user is managing now. It is not derived from where today falls within cycle periods or from expense due dates — on 01/11 with *D* = 5 the October period is still running, but November is active.
+
+- No cycle persisted yet → the current calendar month.
+- **Encerrar ciclo** (only on the active cycle) closes it and makes the next one active (December → January of the next year), also before the month ends. Nothing in the user's records changes; closed cycles stay viewable.
+- A cycle closed ahead of the calendar takes precedence. Once the calendar passes the persisted cycle, the calendar month becomes active; skipped cycles are not marked as closed. The active cycle never moves backward.
+- The arrows in the dashboard header view other cycles (`#/?ciclo=YYYY-MM`) without changing the active cycle.
+
+Persistence: `profiles.active_cycle` (one per user) and `closed_cycles` (history, read-only for users). Closing goes through `close_financial_cycle()`, which locks the user's profile row and ignores a cycle that is no longer active, so repeated clicks, other tabs and concurrent sessions advance at most once.
 
 Two placement rules, in `src/domain/cycle.ts`:
 
 | Kind of item | Rule | Examples with D = 5 |
 | --- | --- | --- |
 | **Money spent or received on a date** (Cash/Pix purchases, income) | The cycle in progress on that date: `[D of M, D of M+1)` | Pix on 12/10 → Oct · Pix on 04/11 → Oct · Pix on 05/11 → Nov |
-| **Obligations due on a date** (card statements, regular bills, non-card installments) | Due after *D* → that month's cycle; due on or before *D* → closes the previous month's cycle | Due 17/10 → Oct · due 03/11 → Oct · due 05/11 → Oct · due 10/11 → Nov |
+| **Obligations due on a date** (card statements, regular bills) | Due after *D* → that month's cycle; due on or before *D* → closes the previous month's cycle | Due 17/10 → Oct · due 03/11 → Oct · due 05/11 → Oct · due 10/11 → Nov |
 
 Obligations are compared on their nominal day, so a monthly bill lands in exactly one cycle per cycle, including across February and leap years. Every obligation's date falls between the cycle's first day and its closing payment day.
 
@@ -70,10 +80,12 @@ This is not a "purchase month + 1" rule. A card due on the 25th that closes on t
 | Fixed expenses / subscriptions | `paymentDayOverride` (e.g. car on day 17) or `defaultPaymentDay` | Obligation rule. Counted only from the start date. Annual expenses use their configured calendar month |
 | Card purchase | Statement due date | Obligation rule applied to the statement |
 | Card installments | Due date of each consecutive statement | Consecutive cycles from the first statement's cycle |
-| Non-card installments | Monthly from the first payment date | Obligation rule |
+| Pix/Cash installments | Monthly on the due day, from the start month (29–31 clamped in shorter months) | The calendar month of each installment — no card billing, no payment-day offset |
 | Cash / Pix purchase | Purchase date | Cycle in progress on the purchase date |
 
 Future cycles include only registered items. Future occasional spending is not estimated. Income commitment = expected expenses ÷ expected income × 100 (undefined when no income is expected).
+
+Simulated purchases (Cash, Pix or card; single payment or installments) become the same expense the Expenses page would save, and are projected by the same engine.
 
 All of this is centralized in `src/domain/`: `billing.ts` (statements), `cycle.ts` (cycles), `projection.ts` (per-cycle projection) and `simulation.ts` (adds a temporary purchase and reuses the projection). The dashboard, expense list, card previews, expense form hints and simulator all call these functions. Tests: `billing.test.ts`, `cycle.test.ts`, `projection.test.ts`.
 

@@ -3,9 +3,9 @@
  * expense to a *copy* of the projection input and runs the same projection engine.
  */
 import type { FinancialCycle } from './cycle'
-import { monthsBetween } from './dates'
+import { monthIndex, monthsBetween, parseISODate } from './dates'
 import { roundMoney } from './money'
-import { lastChargeCycle, projectCycles, type CycleProjection } from './projection'
+import { chargeCycles, firstInstallmentDate, projectCycles, type CycleProjection } from './projection'
 import type { FinancialData, ISODate, NewExpense, PaymentMethod } from './types'
 
 export interface PurchaseSimulationInput {
@@ -14,9 +14,13 @@ export interface PurchaseSimulationInput {
   amount: number
   paymentMethod: PaymentMethod
   cardId?: string | null
-  /** 1 = single payment. Installments > 1 are only allowed on credit cards. */
+  /** 1 = single payment. */
   installments: number
   purchaseDate: ISODate
+  /** Pix/Cash installments: any date in the month of the first installment (default: purchase date). */
+  startDate?: ISODate
+  /** Pix/Cash installments: monthly due day (default: day of the start date). */
+  dueDay?: number
 }
 
 export interface SimulationRow {
@@ -43,17 +47,20 @@ export function simulationToExpense(input: PurchaseSimulationInput): NewExpense 
   const name = input.description?.trim() || DEFAULT_DESCRIPTION
   const isCard = input.paymentMethod === 'CREDIT_CARD'
   const cardId = isCard ? (input.cardId ?? null) : null
-  if (isCard && input.installments > 1) {
-    return {
-      type: 'INSTALLMENT',
+  if (input.installments > 1) {
+    const installment = {
+      type: 'INSTALLMENT' as const,
       name,
       installmentAmount: installmentAmountFor(input.amount, input.installments),
       installmentsCount: input.installments,
-      purchaseDate: input.purchaseDate,
-      paymentMethod: 'CREDIT_CARD',
-      cardId,
-      firstPaymentDate: null,
+      paymentMethod: input.paymentMethod,
     }
+    if (isCard) return { ...installment, purchaseDate: input.purchaseDate, cardId, firstPaymentDate: null, dueDay: null }
+    // Same fields the expense form produces for Pix/Cash installments.
+    const start = input.startDate ?? input.purchaseDate
+    const dueDay = input.dueDay ?? parseISODate(start).day
+    const firstPaymentDate = firstInstallmentDate(start, dueDay)
+    return { ...installment, purchaseDate: firstPaymentDate, cardId: null, firstPaymentDate, dueDay }
   }
   return {
     type: 'OCCASIONAL',
@@ -66,8 +73,8 @@ export function simulationToExpense(input: PurchaseSimulationInput): NewExpense 
 }
 
 /**
- * Before/after comparison by financial cycle from `start`, covering at least `minCycles`
- * and every cycle the purchase affects (all installments).
+ * Before/after comparison by financial cycle from `start` (or from the purchase's first cycle,
+ * if earlier), covering at least `minCycles` and every cycle the purchase affects (all installments).
  */
 export function simulatePurchase(
   data: FinancialData,
@@ -76,8 +83,9 @@ export function simulatePurchase(
   minCycles = 3,
 ): SimulationResult {
   const expense = simulationToExpense(input)
-  const last = lastChargeCycle(expense, data)
-  const count = Math.max(minCycles, last ? monthsBetween(start, last) + 1 : 0)
+  const charged = chargeCycles(expense, data)
+  if (charged && monthIndex(charged.first) < monthIndex(start)) start = charged.first
+  const count = Math.max(minCycles, charged ? monthsBetween(start, charged.last) + 1 : 0)
 
   const withPurchase: FinancialData = {
     ...data,

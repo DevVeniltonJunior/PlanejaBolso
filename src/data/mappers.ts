@@ -1,5 +1,6 @@
 // Conversion between database rows (snake_case, numeric as string) and domain objects.
-import type { CreditCard, Expense, IncomeSource, NewExpense, SalaryEntry } from '../domain/types'
+import { monthOf, toISODate, type YearMonth } from '../domain/dates'
+import type { ClosedCycle, CreditCard, Expense, IncomeSource, NewExpense, SalaryEntry } from '../domain/types'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Row = Record<string, any>
@@ -75,6 +76,8 @@ export function expenseFromRow(r: Row): Expense {
         paymentMethod: r.payment_method,
         cardId: r.card_id,
         firstPaymentDate: r.first_payment_date,
+        // The column holds the day of month the expense is paid; for Pix/Cash installments, their due day.
+        dueDay: num(r.payment_day_override),
       }
     default:
       return {
@@ -117,6 +120,7 @@ export function expenseToRow(e: NewExpense): Row {
         payment_method: e.paymentMethod,
         card_id: isCard ? e.cardId : null,
         first_payment_date: isCard ? null : e.firstPaymentDate,
+        payment_day_override: isCard ? null : e.dueDay,
       }
     }
     case 'OCCASIONAL':
@@ -129,3 +133,11 @@ export function expenseToRow(e: NewExpense): Row {
       }
   }
 }
+
+/** Cycles are stored as the first day of their month (`YYYY-MM-01`). */
+export const cycleToColumn = (cycle: YearMonth): string => toISODate({ ...cycle, day: 1 })
+
+export const closedCycleFromRow = (r: Row): ClosedCycle => ({
+  cycle: monthOf(r.cycle_month),
+  closedAt: r.closed_at,
+})

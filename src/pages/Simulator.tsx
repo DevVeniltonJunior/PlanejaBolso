@@ -1,13 +1,22 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CommitmentMeter } from '../components/CommitmentMeter'
-import { ErrorMessage, Field, Money, useAction } from '../components/ui'
+import { DAY_OPTIONS, ErrorMessage, Field, Money, useAction } from '../components/ui'
 import { useData, useFinancialData } from '../data/DataContext'
 import { placeCardPurchase } from '../domain/cycle'
-import { todayISO } from '../domain/dates'
-import { PAYMENT_LABEL, formatBRL, formatCycleLong, formatDayMonth, formatMonthShort, formatPercent, formatPeriod } from '../domain/format'
+import { parseISODate, sameMonth, todayISO } from '../domain/dates'
+import {
+  PAYMENT_LABEL,
+  formatBRL,
+  formatCycleLong,
+  formatDate,
+  formatDayMonth,
+  formatMonthShort,
+  formatPercent,
+  formatPeriod,
+} from '../domain/format'
 import { parseMoney } from '../domain/money'
-import { currentCycle } from '../domain/projection'
+import { activeCycle, chargeCycles, installmentTotal, placeInstallment, projectionContext } from '../domain/projection'
 import { installmentAmountFor, simulatePurchase, type PurchaseSimulationInput } from '../domain/simulation'
 import type { PaymentMethod } from '../domain/types'
 
@@ -20,23 +29,38 @@ export function SimulatorPage() {
   const [cardId, setCardId] = useState(data.cards[0]?.id ?? '')
   const [split, setSplit] = useState(false)
   const [installments, setInstallments] = useState('3')
+  // Pix/Cash installments: first installment's month and monthly due day.
+  const [startDate, setStartDate] = useState(todayISO())
+  const [dueDay, setDueDay] = useState(String(parseISODate(todayISO()).day))
   const [added, setAdded] = useState(false)
   const action = useAction()
 
   const amount = parseMoney(amountText)
   const isCard = method === 'CREDIT_CARD'
-  const count = isCard && split ? Math.min(Math.max(Math.floor(Number(installments) || 1), 1), 120) : 1
+  const count = split ? Math.min(Math.max(Math.floor(Number(installments) || 1), 1), 120) : 1
   const cardMissing = isCard && !data.cards.some((c) => c.id === cardId)
 
   const input: PurchaseSimulationInput | null =
-    amount && amount > 0 && !cardMissing
-      ? { description, amount, paymentMethod: method, cardId: isCard ? cardId : null, installments: count, purchaseDate: todayISO() }
+    amount && amount > 0 && !cardMissing && (isCard || !split || startDate)
+      ? {
+          description,
+          amount,
+          paymentMethod: method,
+          cardId: isCard ? cardId : null,
+          installments: count,
+          purchaseDate: todayISO(),
+          startDate,
+          dueDay: Number(dueDay),
+        }
       : null
 
   // Cheap to compute; recalculated on every change so it always matches the dashboard.
-  const result = input && !added ? simulatePurchase(data, input, currentCycle(data, todayISO())) : null
+  const result = input && !added ? simulatePurchase(data, input, activeCycle(data, todayISO())) : null
   const card = isCard ? data.cards.find((c) => c.id === cardId) : undefined
   const placement = card ? placeCardPurchase(card, todayISO(), data.defaultPaymentDay) : null
+  const impacted = result && chargeCycles(result.expense, data)
+  const pixFirst =
+    result?.expense.type === 'INSTALLMENT' && !isCard ? placeInstallment(result.expense, 0, projectionContext(data)) : null
 
   const firstImpact = result?.rows.find((r) => r.balanceDifference !== 0) ?? result?.rows[0]
 
@@ -47,7 +71,7 @@ export function SimulatorPage() {
 
   async function addToExpenses() {
     if (!result) return
-    const what = count > 1 ? `${count}× de ${formatBRL(installmentAmountFor(amount!, count))}` : formatBRL(amount!)
+    const what = result.expense.type === 'INSTALLMENT' ? `${count}× de ${formatBRL(result.expense.installmentAmount)}` : formatBRL(amount!)
     if (!window.confirm(`Adicionar "${result.expense.name}" (${what}) às suas despesas?`)) return
     if (await action.run(() => saveExpense(result.expense))) setAdded(true)
   }
@@ -80,26 +104,49 @@ export function SimulatorPage() {
                 <Link to="/cartoes">Cadastre um cartão</Link> para simular compras no crédito.
               </p>
             ) : (
-              <>
-                <Field label="Cartão">
-                  <select value={cardId} onChange={(e) => setCardId(e.target.value)}>
-                    {data.cards.map((c) => <option key={c.id} value={c.id}>{c.nickname}</option>)}
-                  </select>
-                </Field>
-                <div className="segmented">
-                  <button type="button" className={!split ? 'active' : ''} onClick={() => { setSplit(false); resetAdded() }}>À vista</button>
-                  <button type="button" className={split ? 'active' : ''} onClick={() => { setSplit(true); resetAdded() }}>Parcelado</button>
-                </div>
-                {split && (
-                  <Field
-                    label="Número de parcelas"
-                    hint={amount ? `${count}× de ${formatBRL(installmentAmountFor(amount, count))}` : undefined}
-                  >
-                    <input type="number" min={2} max={120} value={installments} onChange={(e) => setInstallments(e.target.value)} />
-                  </Field>
-                )}
-              </>
+              <Field label="Cartão">
+                <select value={cardId} onChange={(e) => setCardId(e.target.value)}>
+                  {data.cards.map((c) => <option key={c.id} value={c.id}>{c.nickname}</option>)}
+                </select>
+              </Field>
             ))}
+          <div className="segmented">
+            <button type="button" className={!split ? 'active' : ''} onClick={() => { setSplit(false); resetAdded() }}>À vista</button>
+            <button type="button" className={split ? 'active' : ''} onClick={() => { setSplit(true); resetAdded() }}>Parcelado</button>
+          </div>
+          {split && (
+            <Field
+              label="Número de parcelas"
+              hint={amount ? `${count}× de ${formatBRL(installmentAmountFor(amount, count))}` : undefined}
+            >
+              <input type="number" min={2} max={120} value={installments} onChange={(e) => setInstallments(e.target.value)} />
+            </Field>
+          )}
+          {split && !isCard && (
+            <div className="row">
+              <Field label="Data da 1ª parcela">
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => {
+                    setStartDate(e.target.value)
+                    if (e.target.value) setDueDay(String(parseISODate(e.target.value).day))
+                  }}
+                />
+              </Field>
+              <Field label="Dia do vencimento">
+                <select value={dueDay} onChange={(e) => setDueDay(e.target.value)}>
+                  {DAY_OPTIONS.map((d) => <option key={d} value={d}>Dia {d}</option>)}
+                </select>
+              </Field>
+            </div>
+          )}
+          {pixFirst && count > 1 && (
+            <p className="info">
+              1ª parcela em {formatDate(pixFirst.date)}, no {formatCycleLong(pixFirst.cycle).toLowerCase()}; as demais seguem mês a
+              mês. Sem cartão, sem regras de fatura.
+            </p>
+          )}
           {placement && (
             <p className="info">
               Uma compra hoje entra na fatura de {formatMonthShort(placement.statementMonth)} (fecha{' '}
@@ -136,6 +183,17 @@ export function SimulatorPage() {
             </p>
             {firstImpact.after.balance < 0 && (
               <p className="warning">Com esta compra, as despesas previstas do ciclo de {formatMonthShort(firstImpact.cycle)} superam a renda prevista.</p>
+            )}
+            {impacted && (
+              <p className="compare-balance">
+                {result.expense.type === 'INSTALLMENT'
+                  ? `${result.expense.installmentsCount}× de ${formatBRL(result.expense.installmentAmount)} · total ${formatBRL(installmentTotal(result.expense))}`
+                  : `Total ${formatBRL(result.expense.amount)}`}{' '}
+                ·{' '}
+                {sameMonth(impacted.first, impacted.last)
+                  ? `ciclo de ${formatMonthShort(impacted.first)}`
+                  : `ciclos de ${formatMonthShort(impacted.first)} a ${formatMonthShort(impacted.last)}`}
+              </p>
             )}
             <p className="footnote">Simulação baseada nas suas despesas e rendas registradas. É uma projeção, não uma recomendação.</p>
           </section>

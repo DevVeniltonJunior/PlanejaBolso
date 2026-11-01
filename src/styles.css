@@ -242,3 +242,8 @@ input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: 1
 }
 .line-list .day { display: inline-block; min-width: 3.4em; font-variant-numeric: tabular-nums; }
 .table .period { display: block; font-size: 0.72rem; }
+
+/* ---------- cycle navigation */
+.cycle-nav { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.75rem; }
+.cycle-nav strong { text-align: center; }
+.cycle-nav .link-button { white-space: nowrap; min-height: 44px; }

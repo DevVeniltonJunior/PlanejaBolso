@@ -1,18 +1,20 @@
 import { useState, type FormEvent } from 'react'
 import { placeCardPurchase } from '../domain/cycle'
-import { currentMonth, monthKey, todayISO } from '../domain/dates'
+import { currentMonth, monthKey, parseISODate, todayISO } from '../domain/dates'
 import {
   CATEGORY_LABEL,
   EXPENSE_TYPE_LABEL,
   PAYMENT_LABEL,
   RECURRENCE_LABEL,
   formatBRL,
+  formatDate,
   formatDayMonth,
   formatMonthShort,
   monthName,
   moneyInputValue,
 } from '../domain/format'
-import { parseMoney, roundMoney } from '../domain/money'
+import { parseMoney } from '../domain/money'
+import { firstInstallmentDate, installmentTotal, placeInstallment, projectionContext, type ProjectionContext } from '../domain/projection'
 import type { CreditCard, Expense, ExpenseType, FixedCategory, NewExpense, PaymentMethod, Recurrence } from '../domain/types'
 import { DAY_OPTIONS, ErrorMessage, Field } from './ui'
 
@@ -30,7 +32,9 @@ interface FormState {
   purchaseDate: string
   paymentMethod: PaymentMethod
   cardId: string
+  /** Pix/Cash installments: start date (its month holds the first installment) and monthly due day. */
   firstPaymentDate: string
+  dueDay: string
 }
 
 function initialState(initial: Expense | undefined, type: ExpenseType, cards: CreditCard[]): FormState {
@@ -48,6 +52,7 @@ function initialState(initial: Expense | undefined, type: ExpenseType, cards: Cr
     paymentMethod: cards.length ? 'CREDIT_CARD' : 'PIX',
     cardId: cards[0]?.id ?? '',
     firstPaymentDate: todayISO(),
+    dueDay: String(parseISODate(todayISO()).day),
   }
   if (!initial) return s
   s.type = initial.type
@@ -69,6 +74,7 @@ function initialState(initial: Expense | undefined, type: ExpenseType, cards: Cr
       s.paymentMethod = initial.paymentMethod
       s.cardId = initial.cardId ?? s.cardId
       s.firstPaymentDate = initial.firstPaymentDate ?? s.firstPaymentDate
+      s.dueDay = String(initial.dueDay ?? parseISODate(s.firstPaymentDate).day)
       break
     case 'OCCASIONAL':
       s.amount = moneyInputValue(initial.amount)
@@ -106,18 +112,16 @@ function build(s: FormState, cards: CreditCard[]): NewExpense | string {
     case 'INSTALLMENT': {
       const count = Number(s.installmentsCount)
       if (!Number.isInteger(count) || count < 1 || count > 120) return 'Número de parcelas deve ser entre 1 e 120.'
-      if (!s.purchaseDate) return 'Informe a data da compra.'
-      if (!isCard && !s.firstPaymentDate) return 'Informe a data do primeiro pagamento.'
-      return {
-        type: 'INSTALLMENT',
-        name,
-        installmentAmount: amount,
-        installmentsCount: count,
-        purchaseDate: s.purchaseDate,
-        paymentMethod: s.paymentMethod,
-        cardId: isCard ? s.cardId : null,
-        firstPaymentDate: isCard ? null : s.firstPaymentDate,
+      const installment = { type: 'INSTALLMENT' as const, name, installmentAmount: amount, installmentsCount: count, paymentMethod: s.paymentMethod }
+      if (isCard) {
+        if (!s.purchaseDate) return 'Informe a data da compra.'
+        return { ...installment, purchaseDate: s.purchaseDate, cardId: s.cardId, firstPaymentDate: null, dueDay: null }
       }
+      // Pix/Cash: no card billing. The purchase date is not asked; it records the first installment.
+      if (!s.firstPaymentDate) return 'Informe a data de início.'
+      const dueDay = Number(s.dueDay)
+      const firstPaymentDate = firstInstallmentDate(s.firstPaymentDate, dueDay)
+      return { ...installment, purchaseDate: firstPaymentDate, cardId: null, firstPaymentDate, dueDay }
     }
     case 'OCCASIONAL':
       if (!s.purchaseDate) return 'Informe a data da compra.'
@@ -130,6 +134,14 @@ function build(s: FormState, cards: CreditCard[]): NewExpense | string {
         cardId: isCard ? s.cardId : null,
       }
   }
+}
+
+/** First and last Pix/Cash installments, placed by the projection engine. */
+function installmentSchedule(s: FormState, count: number, ctx: ProjectionContext) {
+  const dueDay = Number(s.dueDay)
+  const firstPaymentDate = firstInstallmentDate(s.firstPaymentDate, dueDay)
+  const e = { purchaseDate: firstPaymentDate, paymentMethod: s.paymentMethod, cardId: null, firstPaymentDate, dueDay }
+  return { first: placeInstallment(e, 0, ctx), last: placeInstallment(e, count - 1, ctx) }
 }
 
 const TYPES: ExpenseType[] = ['FIXED', 'SUBSCRIPTION', 'INSTALLMENT', 'OCCASIONAL']
@@ -167,6 +179,11 @@ export function ExpenseForm({
   const isCard = usesPayment && s.paymentMethod === 'CREDIT_CARD'
   // Same placement rules as the projection: the card's statement, then the cycle that pays it.
   const placement = isCard && card && s.purchaseDate ? placeCardPurchase(card, s.purchaseDate, defaultPaymentDay) : null
+  const count = Number(s.installmentsCount) || 0
+  const schedule =
+    s.type === 'INSTALLMENT' && !isCard && s.firstPaymentDate && count >= 1
+      ? installmentSchedule(s, count, projectionContext({ cards, defaultPaymentDay }))
+      : null
 
   function submit(e: FormEvent) {
     e.preventDefault()
@@ -242,19 +259,21 @@ export function ExpenseForm({
           {s.type === 'INSTALLMENT' && (
             <Field
               label="Número de parcelas"
-              hint={amount ? `Total da compra: ${formatBRL(roundMoney(amount * (Number(s.installmentsCount) || 0)))}` : undefined}
+              hint={amount ? `Total: ${formatBRL(installmentTotal({ installmentAmount: amount, installmentsCount: count }))}` : undefined}
             >
               <input type="number" min={1} max={120} value={s.installmentsCount} onChange={(e) => set('installmentsCount', e.target.value)} required />
             </Field>
           )}
-          <Field label="Data da compra">
-            <input type="date" value={s.purchaseDate} onChange={(e) => set('purchaseDate', e.target.value)} required />
-          </Field>
           <Field label="Forma de pagamento">
             <select value={s.paymentMethod} onChange={(e) => set('paymentMethod', e.target.value as PaymentMethod)}>
               {(['CREDIT_CARD', 'PIX', 'CASH'] as const).map((p) => <option key={p} value={p}>{PAYMENT_LABEL[p]}</option>)}
             </select>
           </Field>
+          {(s.type === 'OCCASIONAL' || isCard) && (
+            <Field label="Data da compra">
+              <input type="date" value={s.purchaseDate} onChange={(e) => set('purchaseDate', e.target.value)} required />
+            </Field>
+          )}
           {isCard &&
             (cards.length === 0 ? (
               <p className="info">Cadastre um cartão na aba Cartões para usar esta forma de pagamento.</p>
@@ -273,9 +292,33 @@ export function ExpenseForm({
               </Field>
             ))}
           {s.type === 'INSTALLMENT' && !isCard && (
-            <Field label="Data do primeiro pagamento" hint="As demais parcelas são calculadas mês a mês a partir desta data.">
-              <input type="date" value={s.firstPaymentDate} onChange={(e) => set('firstPaymentDate', e.target.value)} required />
-            </Field>
+            <>
+              <div className="row">
+                <Field label="Data de início">
+                  <input
+                    type="date"
+                    value={s.firstPaymentDate}
+                    onChange={(e) => {
+                      set('firstPaymentDate', e.target.value)
+                      if (e.target.value) set('dueDay', String(parseISODate(e.target.value).day))
+                    }}
+                    required
+                  />
+                </Field>
+                <Field label="Dia do vencimento">
+                  <select value={s.dueDay} onChange={(e) => set('dueDay', e.target.value)}>
+                    {DAY_OPTIONS.map((d) => <option key={d} value={d}>Dia {d}</option>)}
+                  </select>
+                </Field>
+              </div>
+              {schedule && (
+                <p className="field-hint">
+                  1ª parcela em {formatDate(schedule.first.date)} (ciclo de {formatMonthShort(schedule.first.cycle)}), última em{' '}
+                  {formatDate(schedule.last.date)} (ciclo de {formatMonthShort(schedule.last.cycle)}). Uma parcela por mês a partir do
+                  mês de início; vencimentos nos dias 29–31 passam para o último dia dos meses mais curtos.
+                </p>
+              )}
+            </>
           )}
         </>
       )}

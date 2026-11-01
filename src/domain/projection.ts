@@ -10,7 +10,8 @@
  * - Credit card purchases (single or installments): statement computed from the card's own
  *   closing and due dates (`billing.ts`), then the statement due date is placed by the
  *   obligation rule. Installments fall on consecutive statements, hence consecutive cycles.
- * - Non-card installments: monthly from the first payment date, placed by the obligation rule.
+ * - Pix/Cash installments: monthly on their due day from the first installment's month; each
+ *   one belongs to the cycle of its calendar month (no card billing, no payment-day offset).
  * - Cash / Pix purchases and income: the cycle in progress on their date.
  * - Salary: the cycle of its reference month.
  */
@@ -20,9 +21,9 @@ import {
   cycleOfDate,
   cycleSettlementDate,
   cycleStart,
-  obligationCycle,
   obligationMonth,
   placeCardPurchase,
+  resolveActiveCycle,
   type FinancialCycle,
 } from './cycle'
 import { addMonths, compareDates, dateInMonth, monthOf, monthsBetween, parseISODate, sameMonth, toISODate, type YearMonth } from './dates'
@@ -100,9 +101,9 @@ export function projectionContext(data: Pick<FinancialData, 'cards' | 'defaultPa
   return { cards: new Map(data.cards.map((c) => [c.id, c])), defaultPaymentDay: data.defaultPaymentDay }
 }
 
-/** Cycle in progress today — the dashboard's "current" cycle. */
-export function currentCycle(data: Pick<FinancialData, 'defaultPaymentDay'>, today: ISODate): FinancialCycle {
-  return cycleOfDate(today, data.defaultPaymentDay)
+/** Active cycle on `today` (see `resolveActiveCycle`) — the cycle the dashboard and simulator start from. */
+export function activeCycle(data: Pick<FinancialData, 'activeCycle'>, today: ISODate): FinancialCycle {
+  return resolveActiveCycle(data.activeCycle, monthOf(today))
 }
 
 // ---------------------------------------------------------------- regular expenses and income
@@ -174,9 +175,14 @@ export function placeOccasional(
   return { cycle: cycleOfDate(e.purchaseDate, ctx.defaultPaymentDay), date: e.purchaseDate }
 }
 
+/** First Pix/Cash installment: the due day in the start date's month (clamped to the month length). */
+export function firstInstallmentDate(startDate: ISODate, dueDay: number): ISODate {
+  return toISODate(dateInMonth(monthOf(startDate), dueDay))
+}
+
 /** Where installment `k` (0-based) lands. Consecutive installments land in consecutive cycles. */
 export function placeInstallment(
-  e: Pick<InstallmentExpense, 'purchaseDate' | 'paymentMethod' | 'cardId' | 'firstPaymentDate'>,
+  e: Pick<InstallmentExpense, 'purchaseDate' | 'paymentMethod' | 'cardId' | 'firstPaymentDate' | 'dueDay'>,
   k: number,
   ctx: ProjectionContext,
 ): Placement {
@@ -186,12 +192,10 @@ export function placeInstallment(
     const statementMonth = addMonths(first.statementMonth, k)
     return { cycle: addMonths(first.cycle, k), date: toISODate(statementDueDate(card, statementMonth)), statementMonth, card }
   }
+  // Pix/Cash: the nominal due day is kept, so day 31 becomes 28/29 in February and 31 again in March.
   const first = parseISODate(e.firstPaymentDate ?? e.purchaseDate)
   const month = addMonths(monthOf(first), k)
-  return {
-    cycle: obligationCycle(month, first.day, ctx.defaultPaymentDay),
-    date: toISODate(dateInMonth(month, first.day)),
-  }
+  return { cycle: month, date: toISODate(dateInMonth(month, e.dueDay ?? first.day)) }
 }
 
 /** Charges an expense produces in a given cycle (zero or one). */
@@ -226,17 +230,25 @@ export function chargesInCycle(expense: Expense, cycle: FinancialCycle, ctx: Pro
   }
 }
 
-/** Last cycle affected by an expense; `null` for open-ended recurring expenses. */
-export function lastChargeCycle(expense: NewExpense, data: Pick<FinancialData, 'cards' | 'defaultPaymentDay'>): FinancialCycle | null {
+/** First and last cycles affected by a purchase; `null` for open-ended recurring expenses. */
+export function chargeCycles(
+  expense: NewExpense,
+  data: Pick<FinancialData, 'cards' | 'defaultPaymentDay'>,
+): { first: FinancialCycle; last: FinancialCycle } | null {
   const ctx = projectionContext(data)
   switch (expense.type) {
     case 'FIXED':
     case 'SUBSCRIPTION':
       return null
-    case 'OCCASIONAL':
-      return placeOccasional(expense, ctx).cycle
+    case 'OCCASIONAL': {
+      const { cycle } = placeOccasional(expense, ctx)
+      return { first: cycle, last: cycle }
+    }
     case 'INSTALLMENT':
-      return placeInstallment(expense, expense.installmentsCount - 1, ctx).cycle
+      return {
+        first: placeInstallment(expense, 0, ctx).cycle,
+        last: placeInstallment(expense, expense.installmentsCount - 1, ctx).cycle,
+      }
   }
 }
 
